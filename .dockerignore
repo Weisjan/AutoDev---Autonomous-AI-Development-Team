@@ -1,0 +1,5 @@
+.git
+.venv
+.autodev
+__pycache__
+.pytest_cache

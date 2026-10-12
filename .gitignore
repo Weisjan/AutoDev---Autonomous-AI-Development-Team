@@ -170,6 +170,9 @@ cython_debug/
 # Ruff stuff:
 .ruff_cache/
 
+# AutoDev generated workspace
+.autodev/
+
 # PyPI configuration file
 .pypirc
 
