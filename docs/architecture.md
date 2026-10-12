@@ -32,16 +32,27 @@ AutoDev v0.1 does not execute generated code directly on the host. The default b
 The Docker backend runs:
 
 - `--network none`
+- `--user 65534:65534`
+- `--pull never`
 - `--cpus 1`
 - `--memory 256m`
+- `--memory-swap 256m`
 - `--pids-limit 128`
 - `--read-only`
-- `--tmpfs /tmp:rw,noexec,nosuid,size=64m`
-- a bind-mounted generated workspace at `/workspace`
+- `--cap-drop ALL` and `--security-opt no-new-privileges`
+- `--log-driver none` and `--ulimit nofile=256:256`
+- `--tmpfs /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777`
+- a read-only bind-mounted generated workspace at `/workspace`
+
+The fixed pytest command remains unchanged. Container environment settings disable bytecode writes, pytest's cache, and third-party plugin autoloading so standard tests run against the read-only workspace. Tests that need temporary files must use `/tmp`, such as through pytest's `tmp_path` fixture.
+
+Each container receives a unique name. AutoDev kills the Docker CLI on timeout and attempts `docker rm --force` in a `finally` block, including when the caller is interrupted. Cleanup failure disables success; investigate the reported container before resuming execution. Python retains a bounded prefix of stdout and stderr while draining the pipes, and Docker does not persist container logs.
 
 Build the default runtime image with `docker build -f docker/sandbox/Dockerfile -t autodev-sandbox:py311 .`. The image contains Python 3.11 and pytest; runtime network access stays disabled.
 
 If Docker is unavailable, execution is skipped. Do not treat this as a complete sandbox for hostile code without additional host hardening.
+
+The regression tests inspect Docker arguments and mock container lifecycle calls. They do not verify kernel isolation, network denial, or resource enforcement. A live Docker daemon was unavailable during this review, so these runtime properties remain unverified. Use only a trusted local Linux image and a dedicated workspace without secrets. Read-only tests also do not prevent generated Python from manipulating pytest in-process; test success is not proof that hostile code is correct.
 
 ## API Budget
 

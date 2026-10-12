@@ -36,11 +36,9 @@ async def _run(args: argparse.Namespace) -> None:
     if args.workspace:
         updates["workspace_dir"] = args.workspace
     if args.sandbox_backend:
-        sandbox = config.sandbox.model_copy(update={"backend": args.sandbox_backend})
-        updates["sandbox"] = sandbox
-    if args.max_iterations:
-        agents = config.agents.model_copy(update={"max_iterations": args.max_iterations})
-        updates["agents"] = agents
+        updates["sandbox"] = config.sandbox.model_dump() | {"backend": args.sandbox_backend}
+    if args.max_iterations is not None:
+        updates["agents"] = config.agents.model_dump() | {"max_iterations": args.max_iterations}
     if updates:
         config = AutoDevConfig.model_validate(config.model_dump() | updates)
 

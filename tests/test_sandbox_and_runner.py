@@ -1,9 +1,10 @@
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Sequence
 
-from autodev.runner import DEFAULT_PYTEST_COMMAND, TestRunner
+from autodev.runner import DEFAULT_PYTEST_COMMAND
+from autodev.runner import TestRunner as PytestRunner
 from autodev.sandbox import DryRunSandbox
-from autodev.schemas import TestRunResult
+from autodev.schemas import TestRunResult as RunResult
 
 
 class RecordingSandbox:
@@ -16,9 +17,9 @@ class RecordingSandbox:
         command: Sequence[str],
         timeout_seconds: int,
         max_output_chars: int,
-    ) -> TestRunResult:
+    ) -> RunResult:
         self.command = list(command)
-        return TestRunResult(command=list(command), exit_code=0)
+        return RunResult(command=list(command), exit_code=0)
 
 
 def test_dry_run_sandbox_skips_execution(tmp_path: Path) -> None:
@@ -31,7 +32,7 @@ def test_dry_run_sandbox_skips_execution(tmp_path: Path) -> None:
 
 def test_runner_uses_fixed_pytest_command(tmp_path: Path) -> None:
     sandbox = RecordingSandbox()
-    runner = TestRunner(sandbox=sandbox)
+    runner = PytestRunner(sandbox=sandbox)
 
     result = runner.run(tmp_path)
 

@@ -1,14 +1,16 @@
 import asyncio
+from collections.abc import Sequence
 from decimal import Decimal
 from pathlib import Path
-from typing import Sequence
 
 from autodev.agents import DeveloperAgent, ReviewerAgent
 from autodev.budget import ApiBudgetTracker
 from autodev.config import AgentConfig, AutoDevConfig, SandboxConfig
 from autodev.orchestrator import Orchestrator
-from autodev.runner import DEFAULT_PYTEST_COMMAND, TestRunner
-from autodev.schemas import CodeGenerationResult, GeneratedFile, ReviewResult, TestRunResult
+from autodev.runner import DEFAULT_PYTEST_COMMAND
+from autodev.runner import TestRunner as PytestRunner
+from autodev.schemas import CodeGenerationResult, GeneratedFile, ReviewResult
+from autodev.schemas import TestRunResult as RunResult
 
 
 class FakeDeveloperClient:
@@ -40,7 +42,7 @@ class FakeReviewerClient:
         self,
         task: str,
         files: list[GeneratedFile],
-        test_result: TestRunResult | None,
+        test_result: RunResult | None,
     ) -> ReviewResult:
         _ = task, files, test_result
         return ReviewResult(approved=True, risk_level="low", summary="looks good", findings=[])
@@ -57,13 +59,13 @@ class SequenceSandbox:
         command: Sequence[str],
         timeout_seconds: int,
         max_output_chars: int,
-    ) -> TestRunResult:
+    ) -> RunResult:
         _ = workspace, timeout_seconds, max_output_chars
         self.calls += 1
         self.commands.append(list(command))
         if self.calls == 1:
-            return TestRunResult(command=list(command), exit_code=1, stdout="assert -1 == 3")
-        return TestRunResult(command=list(command), exit_code=0, stdout="1 passed")
+            return RunResult(command=list(command), exit_code=1, stdout="assert -1 == 3")
+        return RunResult(command=list(command), exit_code=0, stdout="1 passed")
 
 
 def test_orchestrator_repairs_after_failed_tests(tmp_path: Path) -> None:
@@ -82,7 +84,7 @@ def test_orchestrator_repairs_after_failed_tests(tmp_path: Path) -> None:
         config=config,
         developer=DeveloperAgent(developer_client, budget),
         reviewer=ReviewerAgent(FakeReviewerClient(), budget),
-        test_runner=TestRunner(sandbox=sandbox),
+        test_runner=PytestRunner(sandbox=sandbox),
         budget=budget,
     )
 

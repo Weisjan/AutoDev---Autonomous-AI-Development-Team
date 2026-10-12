@@ -45,13 +45,17 @@ class Workspace:
         files: list[GeneratedFile],
         protected_prefixes: tuple[str, ...] = (),
     ) -> list[Path]:
-        written = []
+        targets = []
         for generated_file in files:
-            if self._is_protected(generated_file.path, protected_prefixes):
+            target = self.resolve(generated_file.path)
+            relative_path = target.relative_to(self.root).as_posix()
+            if self._is_protected(relative_path, protected_prefixes):
                 raise WorkspaceViolation(
                     f"generated file targets protected path: {generated_file.path}"
                 )
-            target = self.resolve(generated_file.path)
+            targets.append((generated_file, target))
+        written = []
+        for generated_file, target in targets:
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(generated_file.content, encoding="utf-8")
             written.append(target)
@@ -74,6 +78,7 @@ class Workspace:
     def snapshot_files(self, max_bytes_per_file: int = 16_000) -> list[GeneratedFile]:
         files = []
         for path in sorted(self.root.rglob("*.py")):
+            self._assert_inside(path.resolve())
             if not path.is_file():
                 continue
             relative = path.relative_to(self.root).as_posix()
@@ -91,9 +96,9 @@ class Workspace:
 
     @staticmethod
     def _is_protected(path: str, protected_prefixes: tuple[str, ...]) -> bool:
-        normalized = path.replace("\\", "/").strip().lstrip("/")
+        normalized = path.replace("\\", "/").strip().lstrip("/").casefold()
         for prefix in protected_prefixes:
-            clean_prefix = prefix.replace("\\", "/").strip().strip("/")
+            clean_prefix = prefix.replace("\\", "/").strip().strip("/").casefold()
             if normalized == clean_prefix or normalized.startswith(f"{clean_prefix}/"):
                 return True
         return False

@@ -10,7 +10,9 @@ Generated files are written only inside the configured workspace directory. Path
 
 The `tests/` directory is protected from model writes, so generated code cannot rewrite the fixed tests it is judged against.
 
-Execution is disabled by default through `dry_run`. The only implemented execution backend is Docker, configured with no network, resource limits, a read-only container root filesystem, and a bind-mounted workspace. If Docker is unavailable, test execution is skipped and the workflow reports that limitation. Docker is not a substitute for a hardened isolation environment for hostile code.
+Execution is disabled by default through `dry_run`. The only implemented execution backend is Docker, configured with no network, a non-root user, resource limits, and read-only container and workspace filesystems. The runtime image must be built locally; AutoDev does not pull images during execution. If Docker is unavailable, test execution is skipped and the workflow reports that limitation. Docker is not a substitute for a hardened isolation environment for hostile code.
+
+Container cleanup is attempted after each run, including timeouts. A cleanup failure prevents a successful workflow result and is reported for manual investigation. Output retention is bounded, and Docker log storage is disabled.
 
 AutoDev never auto-pushes or auto-merges changes.
 
