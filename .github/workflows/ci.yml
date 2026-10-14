@@ -24,7 +24,7 @@ jobs:
       - name: Ruff
         run: ruff check .
       - name: Pytest
-        run: python -m pytest --basetemp .autodev/pytest-ci -p no:cacheprovider
+        run: python -m pytest --basetemp "${{ runner.temp }}/autodev-pytest" -p no:cacheprovider
 
   sandbox-image:
     runs-on: ubuntu-latest
