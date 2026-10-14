@@ -34,11 +34,19 @@ class SandboxConfig(BaseModel):
     max_output_chars: PositiveInt = 20_000
 
 
+class CodexCLIConfig(BaseModel):
+    executable: str = Field(default="codex", min_length=1)
+    timeout_seconds: PositiveInt = 180
+    max_output_bytes: PositiveInt = 1_000_000
+
+
 class AutoDevConfig(BaseModel):
+    provider: Literal["codex_cli", "openai_api"] = "codex_cli"
     workspace_dir: Path = Path(".autodev/workspace")
     reset_workspace: bool = True
     agents: AgentConfig = Field(default_factory=AgentConfig)
     sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
+    codex_cli: CodexCLIConfig = Field(default_factory=CodexCLIConfig)
 
 
 def _decimal_env(name: str, default: Decimal) -> Decimal:
@@ -72,7 +80,13 @@ def load_config_from_env() -> AutoDevConfig:
         docker_image=os.getenv("AUTODEV_DOCKER_IMAGE", "autodev-sandbox:py311"),
     )
     return AutoDevConfig(
+        provider=os.getenv("AUTODEV_PROVIDER", "codex_cli"),
         workspace_dir=Path(os.getenv("AUTODEV_WORKSPACE", ".autodev/workspace")),
         agents=agents,
         sandbox=sandbox,
+        codex_cli=CodexCLIConfig(
+            executable=os.getenv("AUTODEV_CODEX_EXECUTABLE", "codex"),
+            timeout_seconds=_int_env("AUTODEV_CODEX_TIMEOUT_SECONDS", 180),
+            max_output_bytes=_int_env("AUTODEV_CODEX_MAX_OUTPUT_BYTES", 1_000_000),
+        ),
     )

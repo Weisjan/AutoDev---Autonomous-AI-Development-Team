@@ -2,11 +2,17 @@
 
 ## Components
 
-`DeveloperAgent` wraps a model client that uses the OpenAI Agents SDK with a Pydantic `CodeGenerationResult` output type. It receives the user task, previous generated files, and failing pytest output.
+`DeveloperAgent` wraps an injected model client returning a Pydantic `CodeGenerationResult`. It receives the user task, previous generated files, and failing pytest output.
 
 `TestRunner` owns a fixed pytest command. It delegates execution to a sandbox backend and never accepts model-generated commands.
 
-`ReviewerAgent` wraps a separate model client that uses the OpenAI Agents SDK with a Pydantic `ReviewResult` output type. It reviews the final files independently from the developer loop.
+`ReviewerAgent` uses the provider's review method returning a Pydantic `ReviewResult`. It reviews the final files in a separate model call from the developer loop.
+
+`ModelProvider` combines the developer and reviewer client protocols. `build_provider` selects `codex_cli` by default, or the explicitly configured `openai_api` adapter. The API adapter preserves the existing Agents SDK clients; its dependency is optional and imported only during API calls. No errors trigger a provider switch.
+
+`CodexCLIProvider` invokes `codex exec` through `asyncio.create_subprocess_exec`, with no shell. Prompts go through stdin, with a temporary Pydantic-derived JSON Schema requiring all properties, including nullable fields. Final JSON on stdout is validated with `model_validate_json(strict=True)` before the Workspace receives any files. Pipes are drained concurrently with bounded retention and a per-call timeout. Timeout, cancellation, and communication failure kill/reap the subprocess. Errors omit raw subprocess diagnostics and validation inputs.
+
+Codex runs in an isolated temporary directory with read-only sandboxing, approvals set to `never`, and shell execution, snapshots, web search, and parallel agents disabled. User configuration and execution rules are ignored. The CLI is restricted to the OpenAI provider and ChatGPT login, with API credential environment variables excluded. AutoDev never opens credential files or reads token values; Codex manages its existing login. AutoDev writes only a temporary schema during a provider call. The Workspace remains the only writer of generated source files. On Windows, npm launchers resolve to the packaged native binary so cleanup targets Codex directly.
 
 `Workspace` is the write gate for generated files. It resolves every model-provided path under the configured workspace root and rejects absolute paths or traversal.
 
@@ -27,7 +33,7 @@
 
 ## Sandbox Limitation
 
-AutoDev v0.1 does not execute generated code directly on the host. The default backend is `dry_run`, which disables execution and records a skipped test result.
+AutoDev v0.1.1 does not execute generated code directly on the host. The default backend is `dry_run`, which disables execution and records a skipped test result.
 
 The Docker backend runs:
 
@@ -57,6 +63,8 @@ The regression tests inspect Docker arguments and mock container lifecycle calls
 ## API Budget
 
 AutoDev uses a conservative budget guard before each model call. It does not calculate provider billing from live token prices. Instead, it multiplies the configured estimated cost per model call by the number of reserved calls and stops before exceeding `AUTODEV_API_BUDGET_USD`.
+
+This guard also bounds Codex calls, but the USD estimates do not represent ChatGPT billing or usage limits. The three-attempt loop and final reviewer remain sequential.
 
 ## CI
 

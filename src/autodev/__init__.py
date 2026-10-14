@@ -1,4 +1,4 @@
-"""AutoDev v0.1 package."""
+"""AutoDev v0.1.1 package."""
 
 from autodev.config import AutoDevConfig
 from autodev.orchestrator import Orchestrator
