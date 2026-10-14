@@ -1,17 +1,33 @@
-from parallel_arithmetic import add, multiply
-from parallel_text import slugify
+import pytest
 
 
-def test_arithmetic():
-    assert add(-2, 5) == 3
-    assert multiply(-2, 5) == -10
-    assert add(0.25, 0.5) == 0.75
-    assert multiply(0, 5) == 0
+@pytest.mark.parametrize("a,b,expected", [(1, 2, 3), (-2, 5, 3), (0, 0, 0), (0.25, 0.5, 0.75)])
+def test_add(a, b, expected):
+    from parallel_arithmetic import add
+
+    assert add(a, b) == expected
 
 
-def test_slugify():
-    assert slugify(" Hello, World!! ") == "hello-world"
-    assert slugify("a___b   c") == "a-b-c"
-    assert slugify("123") == "123"
-    assert slugify("") == ""
-    assert slugify("---") == ""
+@pytest.mark.parametrize("a,b,expected", [(2, 3, 6), (-2, 5, -10), (0, 5, 0), (0.5, 0.5, 0.25)])
+def test_multiply(a, b, expected):
+    from parallel_arithmetic import multiply
+
+    assert multiply(a, b) == expected
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        (" Hello, World!! ", "hello-world"),
+        ("a___b   c", "a-b-c"),
+        ("123", "123"),
+        ("", ""),
+        ("---", ""),
+        ("  A--42__B  ", "a-42-b"),
+        ("café", "caf"),
+    ],
+)
+def test_slugify(text, expected):
+    from parallel_text import slugify
+
+    assert slugify(text) == expected

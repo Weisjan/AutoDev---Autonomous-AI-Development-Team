@@ -97,3 +97,32 @@ def test_orchestrator_repairs_after_failed_tests(tmp_path: Path) -> None:
     assert "assert -1 == 3" in (developer_client.received_failures[1] or "")
     assert sandbox.commands == [DEFAULT_PYTEST_COMMAND, DEFAULT_PYTEST_COMMAND]
     assert result.model_calls_reserved == 3
+
+
+def test_sequential_infrastructure_failure_does_not_retry_or_review(tmp_path):
+    class InfrastructureSandbox(SequenceSandbox):
+        def run_pytest(self, workspace, command, timeout_seconds, max_output_chars):
+            return RunResult(
+                command=list(command),
+                exit_code=2,
+                failure_kind="infrastructure",
+                stderr="ModuleNotFoundError: No module named 'pydantic'",
+                reason="rebuild sandbox image",
+            )
+
+    budget = ApiBudgetTracker(Decimal("1"), Decimal("0.01"))
+    developer_client = FakeDeveloperClient()
+    config = AutoDevConfig(workspace_dir=tmp_path / "workspace")
+    orchestrator = Orchestrator(
+        config,
+        DeveloperAgent(developer_client, budget),
+        ReviewerAgent(FakeReviewerClient(), budget),
+        PytestRunner(InfrastructureSandbox()),
+        budget,
+    )
+    result = asyncio.run(orchestrator.run_task("Implement add"))
+    assert not result.succeeded
+    assert developer_client.calls == 1
+    assert result.review is None
+    assert result.model_calls_reserved == 1
+    assert result.stopped_reason == "rebuild sandbox image"

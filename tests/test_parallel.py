@@ -315,6 +315,10 @@ def test_parallel_factory_rejects_paid_provider(tmp_path):
 def test_sandbox_checks_use_only_fixed_pytest_and_ruff_commands(tmp_path, monkeypatch):
     calls = []
 
+    def environment_call(self, workspace, timeout, maximum):
+        calls.append(("environment", None))
+        return RunResult(command=["environment"], exit_code=0)
+
     def pytest_call(self, workspace, command, timeout, maximum):
         calls.append(("pytest", command))
         return RunResult(command=list(command), exit_code=0)
@@ -325,9 +329,56 @@ def test_sandbox_checks_use_only_fixed_pytest_and_ruff_commands(tmp_path, monkey
 
     monkeypatch.setattr("autodev.parallel.DockerSandbox.run_pytest", pytest_call)
     monkeypatch.setattr("autodev.parallel.DockerSandbox.run_ruff", ruff_call)
+    monkeypatch.setattr("autodev.parallel.DockerSandbox.check_environment", environment_call)
     config = AutoDevConfig(sandbox={"backend": "docker"})
     assert asyncio.run(SandboxChecks(config).run(tmp_path)).passed
     assert calls == [
+        ("environment", None),
         ("pytest", ["python", "-m", "pytest", "tests", "--tb=short", "-q"]),
         ("ruff", None),
     ]
+
+
+@pytest.mark.parametrize("tool", ["pytest", "ruff", "environment"])
+def test_infrastructure_failure_never_requests_corrections_or_review(tmp_path, tool):
+    result = checks()
+    failure = RunResult(
+        command=[tool],
+        exit_code=2,
+        failure_kind="infrastructure",
+        stderr="ModuleNotFoundError: No module named 'dotenv'",
+    )
+    setattr(result, tool, failure)
+    workflow, developers, _, runner, reviewer = setup(tmp_path, sequence=[result])
+    report = asyncio.run(workflow.run_task("two", plan=make_plan()))
+    assert report.integration_status == "infrastructure_failed"
+    assert not report.succeeded
+    assert [len(task.attempts) for task in report.tasks] == [1, 1]
+    assert len(developers.feedback) == 2
+    assert runner.calls == 1
+    assert report.rounds[0].correction_tasks == []
+    assert report.model_calls_reserved == 2
+    reviewer.review.assert_not_awaited()
+
+
+def test_failed_preflight_skips_pytest_and_ruff(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "autodev.parallel.DockerSandbox.check_environment",
+        lambda *args: RunResult(
+            command=["environment"],
+            exit_code=78,
+            failure_kind="infrastructure",
+            reason="Missing pydantic",
+        ),
+    )
+    monkeypatch.setattr(
+        "autodev.parallel.DockerSandbox.run_pytest", lambda *args: pytest.fail("pytest ran")
+    )
+    monkeypatch.setattr(
+        "autodev.parallel.DockerSandbox.run_ruff", lambda *args: pytest.fail("Ruff ran")
+    )
+    result = asyncio.run(SandboxChecks(AutoDevConfig(sandbox={"backend": "docker"})).run(tmp_path))
+    assert result.infrastructure_failed
+    assert result.environment.exit_code == 78
+    assert result.pytest.skipped and result.ruff.skipped
+    assert not result.passed

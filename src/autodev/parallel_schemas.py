@@ -10,10 +10,23 @@ class IntegratedChecks(BaseModel):
     model_config = ConfigDict(extra="forbid")
     pytest: TestRunResult
     ruff: TestRunResult
+    environment: TestRunResult | None = None
+
+    @property
+    def infrastructure_failed(self) -> bool:
+        return any(
+            result.infrastructure_failed
+            for result in (self.pytest, self.ruff, self.environment)
+            if result is not None
+        )
 
     @property
     def passed(self) -> bool:
-        return self.pytest.passed and self.ruff.passed
+        return (
+            self.pytest.passed
+            and self.ruff.passed
+            and (self.environment is None or self.environment.passed)
+        )
 
     @property
     def unavailable(self) -> bool:

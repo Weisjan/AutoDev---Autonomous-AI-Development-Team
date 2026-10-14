@@ -58,7 +58,7 @@ Dry-run mode writes generated files and review output but does not execute gener
 autodev run --example calculator --provider codex_cli --sandbox-backend dry_run
 ```
 
-To run tests in Docker:
+To run tests in Docker, build the current image first (editing the Dockerfile does not update an existing local tag):
 
 ```powershell
 docker build -f docker/sandbox/Dockerfile -t autodev-sandbox:py311 .
@@ -129,7 +129,7 @@ Parallel development starts from committed `HEAD`. Review and commit or stash tr
 autodev run --parallel --example parallel-demo --provider codex_cli --concurrency 2 --plan-file examples/parallel/plan.json --sandbox-backend docker
 ```
 
-One developer owns `parallel_arithmetic.py`; the other owns `parallel_text.py`. Fixed acceptance tests are seeded into the integration worktree. The agents run concurrently in separate worktrees, and AutoDev commits their validated output and cherry-picks it onto `autodev/<run-id>/integration`. Pytest and Ruff run in Docker, followed by review when both pass. Failures return to the responsible owners for up to three correction rounds; ambiguous failures go to all candidate owners.
+One developer owns `parallel_arithmetic.py`; the other owns `parallel_text.py`. Fixed acceptance tests check addition, multiplication, and slugification, including negatives, zero, floats, punctuation, and empty text. They are seeded into the integration worktree. The agents run concurrently in separate worktrees, and AutoDev commits their validated output and cherry-picks it onto `autodev/<run-id>/integration`. A Docker dependency preflight precedes pytest and Ruff, followed by review when both checks pass. Genuine code failures return to the responsible owners for up to three correction rounds; ambiguous code failures go to all candidate owners. Infrastructure failures stop immediately without developer corrections or final review.
 
 Omit `--plan-file` to ask TaskPlanner to decompose the request. For another repository, use `--repo C:\path\to\repo --task "..."` with a committed baseline and fixed tests under `tests/`. Initial ownership supports exact Python implementation file paths, with tests, configuration, hidden files, and overlapping paths excluded. Agree on shared interfaces before coding; ordered dependencies need separate runs or the sequential workflow.
 
@@ -160,3 +160,20 @@ Worktrees live under `<repo>/.autodev/runs/<run-id>/`; task branches are `autode
 Branches and worktrees are retained on success and failure. Inspect the report and integration diff before deciding what to merge. Conflicts preserve the cherry-pick state for manual inspection. AutoDev never pushes, merges into `main`, approves PRs, resets the source checkout, or deletes branches/worktrees. Git hooks and filesystem monitors are disabled for workflow commands; model-provided commands are never executed.
 
 Git worktrees share metadata and are not security sandboxes. Codex stays read-only, and generated code executes only under the existing Docker restrictions. Tracked credential paths, symlinks, submodules, Git filters, and custom merge drivers are refused by this initial implementation. If a managed environment denies Git metadata writes, worktree creation, or Docker access, obtain explicit permission there first; AutoDev does not elevate or broaden permissions automatically. ChatGPT rate/usage limits stop the affected batch; retry later, with no token handling or paid fallback.
+
+## Rebuilding And Diagnosing The Docker Test Environment
+
+The image uses a digest-pinned Python base and `docker/sandbox/requirements.lock` with exact versions and wheel SHA256 hashes, following [Docker's pinned-base guidance](https://docs.docker.com/build/building/best-practices/) and [pip's hash-checking installation guidance](https://pip.pypa.io/en/stable/topics/secure-installs/). The lock covers runtime, development, transitive, and build dependencies for Python 3.11 on Linux amd64/arm64. AutoDev is installed with `.[dev]` using the already-locked packages and build backend; `pip check` and a dependency smoke check must pass during the build. The optional `openai_api` extra is excluded.
+
+Rebuild whenever the Dockerfile, lock, preflight script, `pyproject.toml` dependencies/build metadata, or baked AutoDev source changes, and before using an older sandbox tag with a new release. If dependencies change, deliberately update the pinned versions/hashes in the lock; the lock-coverage regression test and image build catch missing/incompatible entries. Review base-digest and lock updates before applying them. Editing files alone never rebuilds the image. Confirm `AUTODEV_DOCKER_IMAGE` points to the tag you rebuilt:
+
+```powershell
+docker build -f docker/sandbox/Dockerfile -t autodev-sandbox:py311 .
+docker image inspect autodev-sandbox:py311 --format '{{.Id}} {{.Created}}'
+```
+
+Normal builds correctly invalidate changed layers. If diagnosing an uncertain cache, add `--no-cache` to that build command. Network access is permitted only at image build time; AutoDev never downloads images or installs dependencies during validation. The build context allows only project metadata, source, and sandbox build inputs, excluding credentials, `.env`, Git metadata, reports, and worktrees.
+
+Before parallel checks, the trusted image preflight runs using `python -I` so workspace modules cannot shadow its dependencies. It verifies installed AutoDev runtime/dev requirements and the integrated repository's declared runtime/dev dependencies and version constraints. A stale image missing the preflight script also fails safely. Other projects needing additional dependencies require a reviewed project-specific image and lock, selected with `AUTODEV_DOCKER_IMAGE`.
+
+Results contain `failure_kind: "infrastructure"` or `"code"` (null on success), and the JSON report includes the environment preflight result. Missing installed dependencies or validation executables, failed Docker startup/cleanup, and validation-tool configuration/internal errors produce `integration_status: "infrastructure_failed"`; no correction round or review is requested. Resolve/rebuild the environment before retrying the workflow. Assertion failures, source syntax errors, missing generated modules such as `parallel_text`, and Ruff lint findings remain code failures and use the bounded correction loop. Dry-run remains unverified and does not claim success.

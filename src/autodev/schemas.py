@@ -62,10 +62,20 @@ class TestRunResult(BaseModel):
     timed_out: bool = False
     skipped: bool = False
     reason: str | None = None
+    failure_kind: Literal["code", "infrastructure"] | None = None
+
+    @property
+    def infrastructure_failed(self) -> bool:
+        return self.failure_kind == "infrastructure"
 
     @property
     def passed(self) -> bool:
-        return self.exit_code == 0 and not self.timed_out and not self.skipped
+        return (
+            self.exit_code == 0
+            and not self.timed_out
+            and not self.skipped
+            and self.failure_kind is None
+        )
 
     def combined_output(self) -> str:
         chunks = []

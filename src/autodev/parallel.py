@@ -23,8 +23,8 @@ from autodev.parallel_schemas import (
 from autodev.planning import TaskPlan, TaskPlanner, responsible_tasks
 from autodev.providers import CodexCLIProvider, ProviderError
 from autodev.runner import DEFAULT_PYTEST_COMMAND
-from autodev.sandbox import DockerSandbox, DryRunSandbox
-from autodev.schemas import CodeGenerationResult, GeneratedFile
+from autodev.sandbox import DEFAULT_RUFF_COMMAND, DockerSandbox, DryRunSandbox
+from autodev.schemas import CodeGenerationResult, GeneratedFile, TestRunResult
 from autodev.workspace import Workspace, WorkspaceViolation
 
 
@@ -46,6 +46,28 @@ class SandboxChecks:
         )
 
     async def run(self, workspace: Path) -> IntegratedChecks:
+        environment = await asyncio.to_thread(
+            self.sandbox.check_environment,
+            workspace,
+            self.config.sandbox.timeout_seconds,
+            self.config.sandbox.max_output_chars,
+        )
+        if not environment.passed:
+
+            def blocked(command: list[str]) -> TestRunResult:
+                return TestRunResult(
+                    command=command,
+                    exit_code=None,
+                    skipped=True,
+                    failure_kind=environment.failure_kind,
+                    reason=environment.reason,
+                )
+
+            return IntegratedChecks(
+                environment=environment,
+                pytest=blocked(DEFAULT_PYTEST_COMMAND),
+                ruff=blocked(DEFAULT_RUFF_COMMAND),
+            )
         pytest = await asyncio.to_thread(
             self.sandbox.run_pytest,
             workspace,
@@ -59,7 +81,7 @@ class SandboxChecks:
             self.config.sandbox.timeout_seconds,
             self.config.sandbox.max_output_chars,
         )
-        return IntegratedChecks(pytest=pytest, ruff=ruff)
+        return IntegratedChecks(environment=environment, pytest=pytest, ruff=ruff)
 
 
 class ParallelOrchestrator:
@@ -192,6 +214,13 @@ class ParallelOrchestrator:
                     current.commits.append(report.integration_commit)
             report.integration_status = "integrated"
             current.checks = await self.checks.run(self.integration.integration.path)
+            if current.checks.infrastructure_failed:
+                report.integration_status = "infrastructure_failed"
+                report.stopped_reason = (
+                    "Docker validation infrastructure failed; rebuild the configured sandbox image "
+                    "and check Docker availability. No developer corrections were requested."
+                )
+                return
             if current.checks.unavailable:
                 report.integration_status = "validation_unavailable"
                 report.stopped_reason = (

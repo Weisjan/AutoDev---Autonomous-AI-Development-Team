@@ -7,7 +7,13 @@ from pathlib import Path
 import pytest
 
 from autodev.runner import DEFAULT_PYTEST_COMMAND
-from autodev.sandbox import DockerSandbox, _run_bounded, _workspace_mount
+from autodev.sandbox import (
+    DEFAULT_RUFF_COMMAND,
+    DockerSandbox,
+    _run_bounded,
+    _workspace_mount,
+    infrastructure_failure_reason,
+)
 
 
 @pytest.mark.parametrize(
@@ -65,6 +71,7 @@ def test_missing_docker_disables_execution(tmp_path: Path, monkeypatch) -> None:
     assert result.skipped
     assert not result.passed
     assert "unavailable" in result.reason
+    assert result.infrastructure_failed
 
 
 def test_cleanup_failure_prevents_success(tmp_path: Path, monkeypatch) -> None:
@@ -78,6 +85,85 @@ def test_cleanup_failure_prevents_success(tmp_path: Path, monkeypatch) -> None:
     assert result.skipped
     assert not result.passed
     assert "cleanup failed" in result.reason
+    assert result.infrastructure_failed
+
+
+@pytest.mark.parametrize(
+    "command,code,output",
+    [
+        (DEFAULT_PYTEST_COMMAND, 2, "ModuleNotFoundError: No module named 'dotenv'"),
+        (DEFAULT_PYTEST_COMMAND, 2, "ModuleNotFoundError: No module named 'pydantic'"),
+        (DEFAULT_RUFF_COMMAND, 1, "/usr/local/bin/python: No module named ruff"),
+        (
+            DEFAULT_PYTEST_COMMAND,
+            1,
+            "FileNotFoundError: [Errno 2] No such file or directory: 'git'",
+        ),
+        (DEFAULT_PYTEST_COMMAND, 1, "Error response from daemon: invalid mount config"),
+        (DEFAULT_PYTEST_COMMAND, 1, "exec: python: executable file not found in $PATH"),
+        (DEFAULT_PYTEST_COMMAND, 125, "container startup failed"),
+        (DEFAULT_PYTEST_COMMAND, 127, "executable missing"),
+        (DEFAULT_PYTEST_COMMAND, 137, "killed"),
+        (DEFAULT_PYTEST_COMMAND, 3, "INTERNALERROR"),
+        (DEFAULT_PYTEST_COMMAND, 4, "file or directory not found: tests"),
+        (DEFAULT_PYTEST_COMMAND, 5, "no tests ran"),
+        (DEFAULT_RUFF_COMMAND, 2, "unexpected argument"),
+    ],
+)
+def test_infrastructure_failure_classification(tmp_path, monkeypatch, command, code, output):
+    def fake_run(arguments, *args):
+        if arguments[1] == "rm":
+            return subprocess.CompletedProcess(arguments, 0, "", ""), False
+        return subprocess.CompletedProcess(arguments, code, "", output), False
+
+    monkeypatch.setattr("autodev.sandbox._run_bounded", fake_run)
+    sandbox = DockerSandbox("image")
+    result = sandbox._run_command(tmp_path, command, 30, 20000)
+    assert result.infrastructure_failed
+    assert not result.passed
+    assert result.reason
+
+
+@pytest.mark.parametrize(
+    "command,code,output",
+    [
+        (DEFAULT_PYTEST_COMMAND, 1, "AssertionError: assert 1 == 2"),
+        (DEFAULT_PYTEST_COMMAND, 2, "ModuleNotFoundError: No module named 'parallel_text'"),
+        (DEFAULT_PYTEST_COMMAND, 2, "ModuleNotFoundError: No module named 'autodev.missing'"),
+        (DEFAULT_PYTEST_COMMAND, 2, "SyntaxError: invalid syntax"),
+        (
+            DEFAULT_PYTEST_COMMAND,
+            1,
+            "FileNotFoundError: [Errno 2] No such file or directory: 'data.csv'",
+        ),
+        (DEFAULT_RUFF_COMMAND, 1, "module.py:1: F821 Undefined name"),
+    ],
+)
+def test_genuine_code_failures_are_not_infrastructure(command, code, output):
+    assert infrastructure_failure_reason(command, code, output) is None
+
+
+def test_environment_probe_failure_is_infrastructure_even_for_stale_image(tmp_path, monkeypatch):
+    def fake_run(arguments, *args):
+        if arguments[1] == "rm":
+            return subprocess.CompletedProcess(arguments, 0, "", ""), False
+        return subprocess.CompletedProcess(
+            arguments, 2, "", "can't open check_environment.py"
+        ), False
+
+    monkeypatch.setattr("autodev.sandbox._run_bounded", fake_run)
+    result = DockerSandbox("old-image").check_environment(tmp_path, 30, 20000)
+    assert result.infrastructure_failed
+    assert "rebuild" in result.reason
+
+
+def test_environment_probe_timeout_is_infrastructure(tmp_path, monkeypatch):
+    def fake_run(arguments, *args):
+        return subprocess.CompletedProcess(arguments, 0, "", ""), arguments[1] == "run"
+
+    monkeypatch.setattr("autodev.sandbox._run_bounded", fake_run)
+    result = DockerSandbox("image").check_environment(tmp_path, 30, 20000)
+    assert result.infrastructure_failed and result.timed_out
 
 
 def test_already_removed_container_is_not_a_cleanup_failure(tmp_path: Path, monkeypatch) -> None:

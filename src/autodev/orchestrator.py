@@ -81,12 +81,19 @@ class Orchestrator:
             if final_test_result.passed:
                 stopped_reason = "tests passed"
                 break
+            if final_test_result.infrastructure_failed:
+                stopped_reason = final_test_result.reason or "validation infrastructure failed"
+                break
             if final_test_result.skipped:
                 stopped_reason = final_test_result.reason or "test execution skipped"
                 break
             failure_output = final_test_result.combined_output()
 
-        review = await self._review_final(task, workspace, final_test_result)
+        review = (
+            None
+            if final_test_result and final_test_result.infrastructure_failed
+            else await self._review_final(task, workspace, final_test_result)
+        )
         tests_passed = final_test_result.passed if final_test_result else False
         succeeded = bool(tests_passed and review and review.approved)
         if review is None and tests_passed:
