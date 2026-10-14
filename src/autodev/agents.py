@@ -112,6 +112,7 @@ Return only structured output matching the schema.
 Do not include shell commands.
 Do not request filesystem access outside the workspace.
 Prefer small, readable Python modules that satisfy the provided pytest tests.
+Files under tests/ are fixed, read-only context. Never return or modify those files.
 When test output is provided, explain the change briefly and return corrected files.
 """
 

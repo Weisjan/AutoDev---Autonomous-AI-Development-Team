@@ -7,6 +7,7 @@ from pathlib import Path
 
 from autodev.config import AutoDevConfig, load_config_from_env
 from autodev.orchestrator import build_orchestrator
+from autodev.providers import ProviderError
 
 
 def main() -> None:
@@ -21,10 +22,14 @@ def main() -> None:
     run_parser.add_argument("--workspace", type=Path, help="Generated workspace directory")
     run_parser.add_argument("--sandbox-backend", choices=["dry_run", "docker"])
     run_parser.add_argument("--max-iterations", type=int)
+    run_parser.add_argument("--provider", choices=["codex_cli", "openai_api"])
 
     args = parser.parse_args()
     if args.command == "run":
-        asyncio.run(_run(args))
+        try:
+            asyncio.run(_run(args))
+        except ProviderError as exc:
+            raise SystemExit(str(exc)) from None
 
 
 async def _run(args: argparse.Namespace) -> None:
@@ -33,6 +38,8 @@ async def _run(args: argparse.Namespace) -> None:
     seed_tests_dir = _resolve_seed_tests(args)
 
     updates = {}
+    if getattr(args, "provider", None):
+        updates["provider"] = args.provider
     if args.workspace:
         updates["workspace_dir"] = args.workspace
     if args.sandbox_backend:
