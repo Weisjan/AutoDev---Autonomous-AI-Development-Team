@@ -4,19 +4,19 @@ build-backend = "hatchling.build"
 
 [project]
 name = "autodev"
-version = "0.1.0"
+version = "0.2.0"
 description = "AI-assisted Python code generation with bounded test-and-review loops."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "AutoDev contributors" }]
 dependencies = [
-    "openai-agents>=0.1.0",
     "pydantic>=2.7",
     "python-dotenv>=1.0",
 ]
 
 [project.optional-dependencies]
+openai_api = ["openai-agents>=0.1.0"]
 dev = [
     "pytest>=8.0",
     "ruff>=0.6.0",

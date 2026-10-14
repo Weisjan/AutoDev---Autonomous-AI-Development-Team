@@ -75,6 +75,11 @@ def _workspace_mount(workspace: Path) -> str:
 
 
 class DryRunSandbox:
+    def run_ruff(
+        self, workspace: Path, timeout_seconds: int, max_output_chars: int
+    ) -> TestRunResult:
+        return self.run_pytest(workspace, DEFAULT_RUFF_COMMAND, timeout_seconds, max_output_chars)
+
     def run_pytest(
         self,
         workspace: Path,
@@ -96,6 +101,20 @@ class DockerSandbox:
         self.image = image
 
     def run_pytest(
+        self,
+        workspace: Path,
+        command: Sequence[str],
+        timeout_seconds: int,
+        max_output_chars: int,
+    ) -> TestRunResult:
+        return self._run_command(workspace, command, timeout_seconds, max_output_chars)
+
+    def run_ruff(
+        self, workspace: Path, timeout_seconds: int, max_output_chars: int
+    ) -> TestRunResult:
+        return self._run_command(workspace, DEFAULT_RUFF_COMMAND, timeout_seconds, max_output_chars)
+
+    def _run_command(
         self,
         workspace: Path,
         command: Sequence[str],
@@ -197,3 +216,22 @@ class DockerSandbox:
         if completed.returncode != 0 and "no such container" not in completed.stderr.lower():
             return f"container cleanup failed: {completed.stderr}"
         return None
+
+
+DEFAULT_RUFF_COMMAND = [
+    "python",
+    "-m",
+    "ruff",
+    "check",
+    ".",
+    "--isolated",
+    "--no-cache",
+    "--select",
+    "E,F,I,UP,B,SIM",
+    "--target-version",
+    "py311",
+    "--line-length",
+    "100",
+    "--output-format",
+    "concise",
+]
