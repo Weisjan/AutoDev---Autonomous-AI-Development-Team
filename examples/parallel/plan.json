@@ -1,0 +1,17 @@
+{
+  "summary": "Two independent modules with disjoint ownership",
+  "tasks": [
+    {
+      "id": "arithmetic",
+      "description": "Implement add(a, b) and multiply(a, b) in parallel_arithmetic.py.",
+      "owned_files": ["parallel_arithmetic.py"],
+      "acceptance_criteria": ["Addition and multiplication work with integers, negatives, zero, and floats"]
+    },
+    {
+      "id": "text",
+      "description": "Implement slugify(text) in parallel_text.py using ASCII letters and digits, lowercasing and collapsing other character runs into hyphens. Strip leading/trailing hyphens.",
+      "owned_files": ["parallel_text.py"],
+      "acceptance_criteria": ["Empty input returns an empty string", "Repeated punctuation and spaces produce one hyphen", "ASCII digits are preserved"]
+    }
+  ]
+}

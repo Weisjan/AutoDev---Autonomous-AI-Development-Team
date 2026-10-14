@@ -4,12 +4,11 @@ from pathlib import Path
 
 from autodev.agents import (
     DeveloperAgent,
-    OpenAIDeveloperClient,
-    OpenAIReviewerClient,
     ReviewerAgent,
 )
 from autodev.budget import ApiBudgetTracker, BudgetExceededError
 from autodev.config import AutoDevConfig
+from autodev.providers import build_provider
 from autodev.runner import DEFAULT_PYTEST_COMMAND, TestRunner
 from autodev.sandbox import DockerSandbox, DryRunSandbox, SandboxBackend
 from autodev.schemas import AttemptLog, GeneratedFile, ReviewResult, TestRunResult, WorkflowResult
@@ -82,12 +81,19 @@ class Orchestrator:
             if final_test_result.passed:
                 stopped_reason = "tests passed"
                 break
+            if final_test_result.infrastructure_failed:
+                stopped_reason = final_test_result.reason or "validation infrastructure failed"
+                break
             if final_test_result.skipped:
                 stopped_reason = final_test_result.reason or "test execution skipped"
                 break
             failure_output = final_test_result.combined_output()
 
-        review = await self._review_final(task, workspace, final_test_result)
+        review = (
+            None
+            if final_test_result and final_test_result.infrastructure_failed
+            else await self._review_final(task, workspace, final_test_result)
+        )
         tests_passed = final_test_result.passed if final_test_result else False
         succeeded = bool(tests_passed and review and review.approved)
         if review is None and tests_passed:
@@ -118,6 +124,7 @@ class Orchestrator:
 
 
 def build_orchestrator(config: AutoDevConfig) -> Orchestrator:
+    provider = build_provider(config)
     budget = ApiBudgetTracker(
         budget_usd=config.agents.api_budget_usd,
         estimated_cost_per_model_call_usd=config.agents.estimated_cost_per_model_call_usd,
@@ -129,11 +136,11 @@ def build_orchestrator(config: AutoDevConfig) -> Orchestrator:
         max_output_chars=config.sandbox.max_output_chars,
     )
     developer = DeveloperAgent(
-        OpenAIDeveloperClient(model=config.agents.developer_model),
+        provider,
         budget=budget,
     )
     reviewer = ReviewerAgent(
-        OpenAIReviewerClient(model=config.agents.reviewer_model),
+        provider,
         budget=budget,
     )
     return Orchestrator(

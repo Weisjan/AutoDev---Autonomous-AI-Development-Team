@@ -6,15 +6,36 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python: "3.11"
+          - os: windows-latest
+            python: "3.12"
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python }}
       - name: Install
         run: python -m pip install -e ".[dev]"
       - name: Ruff
         run: ruff check .
       - name: Pytest
-        run: pytest
+        run: python -m pytest --basetemp "${{ runner.temp }}/autodev-pytest" -p no:cacheprovider
+
+  sandbox-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build pinned sandbox image
+        run: docker build -f docker/sandbox/Dockerfile -t autodev-sandbox:py311 .
+      - name: Check image dependencies with runtime restrictions
+        run: >-
+          docker run --rm --pull never --user 65534:65534 --network none
+          --cpus 1 --memory 256m --memory-swap 256m --pids-limit 128 --read-only
+          --cap-drop ALL --security-opt no-new-privileges --log-driver none
+          --ulimit nofile=256:256 --tmpfs /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777
+          autodev-sandbox:py311 python -I /opt/autodev/check_environment.py /opt/autodev/pyproject.toml

@@ -1,5 +1,16 @@
-.git
-.venv
-.autodev
-__pycache__
-.pytest_cache
+# Only trusted build inputs enter the context. No .env, credentials, reports, or worktrees.
+**
+!README.md
+!pyproject.toml
+!src/
+!src/**
+!docker/
+!docker/sandbox/
+!docker/sandbox/Dockerfile
+!docker/sandbox/requirements.lock
+!docker/sandbox/check_environment.py
+**/__pycache__/
+**/.env
+**/.env.*
+**/.codex/
+**/.aws/

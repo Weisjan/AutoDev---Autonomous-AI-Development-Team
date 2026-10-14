@@ -44,11 +44,16 @@ class Workspace:
         self,
         files: list[GeneratedFile],
         protected_prefixes: tuple[str, ...] = (),
+        allowed_paths: tuple[str, ...] | None = None,
     ) -> list[Path]:
         targets = []
         for generated_file in files:
             target = self.resolve(generated_file.path)
             relative_path = target.relative_to(self.root).as_posix()
+            if allowed_paths is not None and relative_path not in allowed_paths:
+                raise WorkspaceViolation(
+                    f"generated file is outside assigned scope: {relative_path}"
+                )
             if self._is_protected(relative_path, protected_prefixes):
                 raise WorkspaceViolation(
                     f"generated file targets protected path: {generated_file.path}"
