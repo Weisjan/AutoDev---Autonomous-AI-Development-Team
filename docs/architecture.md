@@ -97,3 +97,54 @@ Git worktrees share repository metadata; they do not isolate permissions. Codex'
 Git clean/smudge filters and custom/union merge drivers are rejected through attribute inspection before baseline checkout or staging new task/seed files, so configuration cannot silently introduce host commands or suppress conflicts. Workflow diffs disable external diff helpers and text conversion. Existing line-ending settings are preserved for Windows compatibility.
 
 Offline tests cover overlap using a two-party barrier, worker limits, ownership enforcement, failure routing, correction caps, deadlines, report persistence, and review gating. Real Git tests in temporary repositories verify branch/worktree isolation, incremental integration, retained conflicts, protected tests, hooks, and unchanged source HEAD. A combined test exercises parallel mock models, real Git integration, and correction. Live Codex throughput and Docker kernel isolation are separate runtime checks and are not inferred from mocks.
+# v0.3 local dashboard
+
+`src/autodev/web/` is an optional FastAPI adapter; `frontend/` is a separate Vite React/TypeScript
+application. The API calls `build_parallel_orchestrator` with the existing configuration,
+`codex_cli` provider, Docker checks and existing limits. It does not implement another agent loop.
+The sequential CLI is unchanged. FastAPI/Uvicorn and HTTP test dependencies are optional extras,
+so the locked sandbox runtime/development dependency set stays unchanged.
+
+```text
+React UI → localhost Vite /api proxy → FastAPI RunService
+                                      ↓ asyncio task (one active run)
+                               ParallelOrchestrator
+                          Planner → scoped Developers (≤2)
+                          → IntegrationManager → SandboxChecks → Reviewer
+                                      ↓ lifecycle observer
+                       report snapshots + bounded activity events
+                                      ↓ SSE revision / polling
+                                   React UI
+```
+
+The observer reports actual lifecycle transitions and snapshots without affecting workflow outcomes.
+Existing Pydantic reports remain the disk format. The web adapter adds derived check `passed`
+properties only to API snapshots because v0.2 properties are not serialized. Model and validation
+failures retain their existing classifications and correction bounds. Planner/reviewer failures now
+also mark their attempt as interrupted/failed for accurate presentation.
+
+The service creates ignored per-run metadata before starting work, recovers existing run reports,
+and marks previously running metadata interrupted on restart. It does not resume a half-finished
+run or clean up its branches. Cancellation propagates through asyncio TaskGroups and the existing
+Codex/Git subprocess cancellation handling. Blocking sandbox checks are shielded until their
+existing timeout/cleanup finishes, preventing another workflow from starting while Docker cleanup
+is still pending. Cancellation before the background coroutine starts is finalized by a task callback.
+
+Security boundaries: only explicit startup repository IDs are accepted in requests, unknown fields
+are rejected, limits are bounded, and UI input cannot select executables, provider, network permissions,
+Docker options or arbitrary file paths. The entry point accepts loopback binding only. Middleware
+requires a loopback peer, valid localhost Host and browser Origin, with a session cookie and CSRF
+header for mutations. No wildcard CORS or merge/push endpoints are provided. SSE uses the same
+session and emits revision notifications; full details come from authenticated GET requests.
+
+Generated previews resolve only task-owned Python paths below the canonical run integration
+directory, independently of absolute paths stored in reports. Traversal and symlink/junction paths
+are rejected. Common secret patterns are redacted in API output and UI metadata, and raw Codex
+streams are not exposed. No authentication token file is read by dashboard code. Docker security
+flags, dependency preflight, fixed commands, scope validation and Git integration policy are reused.
+
+Offline tests cover API validation/security, actual Git lifecycle/report/file behavior, cancellation,
+restart recovery and bounded sandbox cleanup. Playwright runs a real browser against a **test-only**
+server injecting mock provider/checks into the real orchestrator. It asserts both modules, commits,
+report success and overlapping developer attempt intervals; it does not claim a live ChatGPT or
+Docker validation occurred. See README for Windows startup and real-demo commands.

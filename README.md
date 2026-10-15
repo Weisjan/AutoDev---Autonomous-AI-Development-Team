@@ -1,8 +1,107 @@
-# AutoDev v0.2
+# AutoDev v0.3
 
 AutoDev is a small Python application where AI agents generate Python code, run a fixed pytest command in a sandbox backend, use failures for up to three repair attempts, and ask a separate reviewer agent for structured feedback.
 
 The default model provider is **Codex CLI**, using your existing ChatGPT login without an OpenAI API key. The existing `openai_api` backend is optional for sequential runs. AutoDev never switches to it after a Codex failure. Sequential development remains the default; `--parallel` enables up to two concurrent Codex developers.
+
+## Local web dashboard (Windows PowerShell)
+
+The optional v0.3 dashboard provides a React/TypeScript interface backed by FastAPI and the
+existing parallel orchestrator. Dashboard runs always use Codex CLI and Docker. The sequential
+and parallel terminal interfaces below remain available.
+
+Prerequisites: Python 3.12, Node.js **22.12 or newer in the 22.x line, or Node 24+**,
+Git, Docker Desktop running Linux containers, and your existing Codex ChatGPT login.
+From the AutoDev checkout, install the optional web dependencies and build the sandbox:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -e ".[dev,web,web_test]"
+docker build -f docker/sandbox/Dockerfile -t autodev-sandbox:py311 .
+codex login status
+```
+
+Start the API in the first PowerShell window, registering each repository the UI may access:
+
+```powershell
+Set-Location 'D:\Projects\AutoDev---Autonomous-AI-Development-Team'
+.\.venv\Scripts\python.exe -m autodev.web --repo 'D:\Projects\AutoDev---Autonomous-AI-Development-Team'
+```
+
+The default address is `http://127.0.0.1:8000`. Repeat `--repo 'D:\Projects\another-project'`
+to register additional local Git repository roots. The CLI accepts only loopback bind addresses.
+Use the same Windows user and Codex environment as your working CLI login. The dashboard
+never reads or copies ChatGPT credentials and never falls back to the OpenAI API.
+
+Start the frontend in a second PowerShell window:
+
+```powershell
+Set-Location 'D:\Projects\AutoDev---Autonomous-AI-Development-Team\frontend'
+npm ci
+npm run dev
+```
+
+Open **http://127.0.0.1:5173**. Vite proxies `/api` to the localhost backend; open the frontend
+using this address consistently. To use a different backend port, pass `--port 8002` and set
+`$env:AUTODEV_API_PORT = '8002'` before starting Vite. Ports 5173 and 8000 must be free for
+the default commands. The backend and frontend are separate processes; `npm run build`
+also checks TypeScript and creates an ignored `frontend/dist/` build.
+
+For the first **real** run:
+
+1. Use a clean tracked Git checkout. Commit your own work manually first; AutoDev never
+   commits your source checkout on your behalf. Untracked files are not copied to agents.
+2. In **New Task**, choose the registered repository and select **Use the bundled two-module
+   demonstration**. Keep two developers and the default bounded limits, then start the workflow.
+3. Watch the actual developer start/finish events, integration, Docker pytest/Ruff output and
+   final reviewer feedback. A supplied demonstration plan skips a model planning call.
+4. Download the JSON report and inspect both generated modules and the retained integration
+   branch/commit. Any Git merge or push remains a separate manual action.
+
+Custom requests use the real TaskPlanner. v0.2 scope rules still apply: agents own exact Python
+implementation paths; tests/control files stay protected. Custom repositories must already contain
+trusted acceptance tests and dependencies compatible with the sandbox image. Rebuild the image
+when runtime/development requirements, lockfile, Dockerfile or environment preflight change;
+the UI does not download dependencies or rebuild images during offline validation.
+
+**Dashboard behavior and limits:** one active workflow per backend process, up to two simultaneous
+developers, no queue, no automatic resume after process termination. History imports existing
+`.autodev/runs/*/report.json` files from registered repositories. Dashboard metadata lives in ignored
+`.autodev/dashboard/`; unfinished runs are shown as interrupted after restart. Existing reports are
+never deleted or rewritten by history loading. Live SSE notifications have a three-second polling
+fallback. Task counts, timestamps and final durations are measured; no progress percentage is
+estimated. Test stdout/stderr is displayed after each check finishes; raw Codex stdout/token streams
+are not exposed. Integration timestamps are available in the activity log; older reports may lack it.
+
+Cancellation stops orchestration/model work and waits for the current bounded Docker check and
+cleanup before permitting another run. Worktrees/commits remain for inspection. Forced process
+termination can leave resources to inspect manually. The UI's repository selector only lists startup
+allowlisted roots; it cannot browse unrelated local folders. File previews are limited to owned Python
+files in the canonical integration worktree, capped at 256 KB and rejected through symlinks/junctions.
+Responses redact common credential patterns. Loopback peer/Host/Origin checks, an HttpOnly
+SameSite session cookie, and a separate dashboard CSRF token protect browser requests. This is
+a single-user local tool, not an internet-facing service; do not expose it through a tunnel or a proxy.
+
+### Dashboard checks (no online model access)
+
+```powershell
+# From the repository root; use a fresh temp directory outside source directories.
+$dashboardTestTemp = Join-Path $env:TEMP ('autodev-pytest-' + [guid]::NewGuid().ToString('N'))
+.\.venv\Scripts\python.exe -m ruff check .
+.\.venv\Scripts\python.exe -m pytest --basetemp $dashboardTestTemp -p no:cacheprovider
+Set-Location frontend
+npm run typecheck
+npm test
+npm run build
+npx playwright install chromium
+npm run test:e2e
+```
+
+Stop any servers on 5173/8001 before the E2E test. Its dedicated test-only server uses mocked
+models/checks and a fresh temporary Git repository, while exercising real planning orchestration,
+overlapping developer calls, worktrees, commits, integration, reports and the browser interface.
+It never calls ChatGPT or Docker, and clearly labels mock validation output. Production has no
+mock-provider environment switch. Backend dashboard tests require the optional `web,web_test`
+extras; the core Docker image continues to run the v0.2 suite without web dependencies.
 
 ## Current Safety Posture
 

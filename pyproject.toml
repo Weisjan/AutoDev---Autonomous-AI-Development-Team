@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "autodev"
-version = "0.2.0"
+version = "0.3.0"
 description = "AI-assisted Python code generation with bounded test-and-review loops."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -16,6 +16,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+web = ["fastapi>=0.115,<1", "uvicorn>=0.30,<1"]
+web_test = ["httpx>=0.27,<1"]
 openai_api = ["openai-agents>=0.1.0"]
 dev = [
     "pytest>=8.0",
@@ -24,6 +26,7 @@ dev = [
 
 [project.scripts]
 autodev = "autodev.cli:main"
+autodev-web = "autodev.web.__main__:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/autodev"]

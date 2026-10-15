@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from time import monotonic
@@ -46,7 +47,7 @@ class SandboxChecks:
         )
 
     async def run(self, workspace: Path) -> IntegratedChecks:
-        environment = await asyncio.to_thread(
+        environment = await self._blocking(
             self.sandbox.check_environment,
             workspace,
             self.config.sandbox.timeout_seconds,
@@ -68,20 +69,34 @@ class SandboxChecks:
                 pytest=blocked(DEFAULT_PYTEST_COMMAND),
                 ruff=blocked(DEFAULT_RUFF_COMMAND),
             )
-        pytest = await asyncio.to_thread(
+        pytest = await self._blocking(
             self.sandbox.run_pytest,
             workspace,
             DEFAULT_PYTEST_COMMAND,
             self.config.sandbox.timeout_seconds,
             self.config.sandbox.max_output_chars,
         )
-        ruff = await asyncio.to_thread(
+        ruff = await self._blocking(
             self.sandbox.run_ruff,
             workspace,
             self.config.sandbox.timeout_seconds,
             self.config.sandbox.max_output_chars,
         )
         return IntegratedChecks(environment=environment, pytest=pytest, ruff=ruff)
+
+    @staticmethod
+    async def _blocking(function, *arguments):
+        # A cancelled await must not abandon Docker's timeout/cleanup thread.
+        worker = asyncio.create_task(asyncio.to_thread(function, *arguments))
+        cancelled = False
+        while not worker.done():
+            try:
+                await asyncio.shield(worker)
+            except asyncio.CancelledError:
+                cancelled = True
+        if cancelled:
+            raise asyncio.CancelledError
+        return worker.result()
 
 
 class ParallelOrchestrator:
@@ -103,6 +118,21 @@ class ParallelOrchestrator:
         self.checks = checks
         self.budget = budget
         self.calls = 0
+        self.observer: Callable[[dict], None] | None = None
+        self.current_report: ParallelWorkflowReport | None = None
+
+    def notify(self, stage: str, **details) -> None:
+        if self.observer and self.current_report:
+            # A dashboard observer cannot change the outcome of the coding workflow.
+            with suppress(Exception):
+                self.observer(
+                    {
+                        "stage": stage,
+                        "at": timestamp(),
+                        **details,
+                        "report": self.current_report.model_dump(mode="json"),
+                    }
+                )
 
     def reserve_call(self) -> None:
         if self.calls >= self.config.parallel.max_model_calls:
@@ -123,11 +153,20 @@ class ParallelOrchestrator:
             integration_branch=self.integration.integration.branch,
             integration_worktree=str(self.integration.integration.path),
         )
+        self.current_report = report
+        self.notify("preparing")
         try:
             await asyncio.wait_for(
                 self._run(report, seed_tests_dir, plan),
                 self.config.parallel.workflow_timeout_seconds,
             )
+        except asyncio.CancelledError:
+            report.integration_status = "cancelled"
+            report.stopped_reason = "workflow cancelled; worktrees and commits retained"
+            for result in report.tasks:
+                if result.status in {"pending", "running"}:
+                    result.status = "cancelled"
+            raise
         except IntegrationConflict as exc:
             report.integration_status = "conflict"
             report.conflicts = exc.paths
@@ -155,6 +194,7 @@ class ParallelOrchestrator:
                 path = self.integration.root / "report.json"
                 report.report_path = str(path)
                 path.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+            self.notify("finished")
         return report
 
     async def _run(
@@ -178,14 +218,19 @@ class ParallelOrchestrator:
                 number=1, agent_id="planner", started_at=timestamp()
             )
             planning_start = monotonic()
+            self.notify("planning")
             try:
                 plan = await asyncio.wait_for(
                     self.planner.decompose(report.request, context),
                     self.config.parallel.agent_timeout_seconds,
                 )
+            except BaseException:
+                report.planner_execution.error = "planning failed or was interrupted"
+                raise
             finally:
                 report.planner_execution.finished_at = timestamp()
                 report.planner_execution.duration_seconds = monotonic() - planning_start
+                self.notify("planner_finished")
         plan = TaskPlan.model_validate(plan)
         if len(plan.tasks) > self.config.parallel.max_tasks:
             raise ValueError("plan exceeds configured task count")
@@ -198,6 +243,7 @@ class ParallelOrchestrator:
 
         pending = {task.id for task in plan.tasks}
         feedback: str | None = None
+        self.notify("tasks_ready")
         for number in range(self.config.parallel.max_corrections + 1):
             current = IntegrationRound(number=number)
             report.rounds.append(current)
@@ -208,12 +254,16 @@ class ParallelOrchestrator:
                 report.stopped_reason = "one or more agents failed; batch was not integrated"
                 return
             for result in selected:
+                self.notify("integrating", task_id=result.task.id)
                 commit = result.attempts[-1].commit
                 if commit:
                     report.integration_commit = await self.integration.integrate(commit)
                     current.commits.append(report.integration_commit)
+                    self.notify("commit_integrated", task_id=result.task.id)
             report.integration_status = "integrated"
+            self.notify("validating")
             current.checks = await self.checks.run(self.integration.integration.path)
+            self.notify("checks_finished")
             if current.checks.infrastructure_failed:
                 report.integration_status = "infrastructure_failed"
                 report.stopped_reason = (
@@ -234,14 +284,19 @@ class ParallelOrchestrator:
                     number=1, agent_id="reviewer", started_at=timestamp()
                 )
                 review_start = monotonic()
+                self.notify("reviewing")
                 try:
                     report.review = await asyncio.wait_for(
                         self.reviewer.review(report.request, context, current.checks.pytest),
                         self.config.parallel.agent_timeout_seconds,
                     )
+                except BaseException:
+                    report.reviewer_execution.error = "review failed or was interrupted"
+                    raise
                 finally:
                     report.reviewer_execution.finished_at = timestamp()
                     report.reviewer_execution.duration_seconds = monotonic() - review_start
+                    self.notify("reviewer_finished")
                 report.succeeded = report.review.approved
                 report.integration_status = "reviewed" if report.succeeded else "review_rejected"
                 report.stopped_reason = (
@@ -252,6 +307,7 @@ class ParallelOrchestrator:
             pending = responsible_tasks(plan, feedback)
             current.correction_tasks = sorted(pending)
             context = Workspace(self.integration.integration.path).snapshot_files()
+            self.notify("correcting", task_ids=sorted(pending))
         report.integration_status = "checks_failed"
         report.stopped_reason = "bounded correction limit reached"
 
@@ -274,6 +330,7 @@ class ParallelOrchestrator:
             )
             result.attempts.append(attempt)
             result.status = "running"
+            self.notify("developer_started", task_id=result.task.id, agent_id=agent_id)
             try:
                 self.reserve_call()
                 client = self.developer_factory(Path(result.worktree))
@@ -317,6 +374,7 @@ class ParallelOrchestrator:
             finally:
                 attempt.finished_at = timestamp()
                 attempt.duration_seconds = monotonic() - start
+                self.notify("developer_finished", task_id=result.task.id, agent_id=agent_id)
                 slots.put_nowait(agent_id)
 
         # TaskGroup waits for all started children and cancels them on workflow cancellation.
