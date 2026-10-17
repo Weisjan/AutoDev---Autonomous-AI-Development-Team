@@ -12,13 +12,15 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 
 from autodev.config import AutoDevConfig
-from autodev.web.models import StartRun
+from autodev.web.models import ResumeRun, StartRun
 from autodev.web.service import RunService
 
 
-def create_app(repositories=None, config=None, factory=None, port=8000):
+def create_app(repositories=None, config=None, factory=None, port=8000, project_factory=None):
     """Only explicitly registered repositories are accessible; no browser path API."""
-    service = RunService(repositories or [Path.cwd()], config or AutoDevConfig(), factory)
+    service = RunService(
+        repositories or [Path.cwd()], config or AutoDevConfig(), factory, project_factory
+    )
     session, csrf = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
     origins = {
         f"http://{host}:{number}"
@@ -93,7 +95,7 @@ def create_app(repositories=None, config=None, factory=None, port=8000):
 
     @app.get("/api/health")
     async def health():
-        return {"status": "ok", "version": "0.3.0"}
+        return {"status": "ok", "version": "0.4.0"}
 
     @app.get("/api/session")
     async def bootstrap():
@@ -159,6 +161,22 @@ def create_app(repositories=None, config=None, factory=None, port=8000):
                 "Content-Disposition": f'attachment; filename="autodev-{value["run_id"]}.json"'
             },
         )
+
+    @app.post("/api/runs/{key}/pause")
+    async def pause(key: str):
+        record(key)
+        try:
+            return await service.pause(key)
+        except RuntimeError as error:
+            raise HTTPException(409, str(error)) from None
+
+    @app.post("/api/runs/{key}/resume")
+    async def resume(key: str, request: ResumeRun):
+        record(key)
+        try:
+            return await service.resume(key, request.confirmed)
+        except RuntimeError as error:
+            raise HTTPException(409, str(error)) from None
 
     @app.get("/api/runs/{key}/files")
     async def files(key: str):

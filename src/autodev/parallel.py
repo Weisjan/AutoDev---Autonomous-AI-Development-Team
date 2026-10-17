@@ -46,7 +46,21 @@ class SandboxChecks:
             else DryRunSandbox()
         )
 
-    async def run(self, workspace: Path) -> IntegratedChecks:
+    async def run(self, workspace: Path, test_paths: list[str] | None = None) -> IntegratedChecks:
+        command = DEFAULT_PYTEST_COMMAND
+        if test_paths is not None:
+            from autodev.project_models import test_path
+
+            if not test_paths or len(test_paths) > 20:
+                raise ValueError("Provide bounded trusted test paths")
+            command = [
+                "python",
+                "-m",
+                "pytest",
+                *[test_path(p) for p in test_paths],
+                "--tb=short",
+                "-q",
+            ]
         environment = await self._blocking(
             self.sandbox.check_environment,
             workspace,
@@ -66,13 +80,13 @@ class SandboxChecks:
 
             return IntegratedChecks(
                 environment=environment,
-                pytest=blocked(DEFAULT_PYTEST_COMMAND),
+                pytest=blocked(command),
                 ruff=blocked(DEFAULT_RUFF_COMMAND),
             )
         pytest = await self._blocking(
             self.sandbox.run_pytest,
             workspace,
-            DEFAULT_PYTEST_COMMAND,
+            command,
             self.config.sandbox.timeout_seconds,
             self.config.sandbox.max_output_chars,
         )

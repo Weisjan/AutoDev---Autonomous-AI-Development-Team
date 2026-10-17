@@ -7,16 +7,24 @@ import os
 import re
 from pathlib import Path
 
+from autodev.checkpoints import RecoveryRequired
 from autodev.config import AutoDevConfig
 from autodev.integration import GitOperationError, IntegrationManager
 from autodev.parallel import build_parallel_orchestrator, timestamp
 from autodev.parallel_schemas import ParallelWorkflowReport
 from autodev.planning import TaskPlan
+from autodev.project import build_project_orchestrator
+from autodev.project_models import ProjectReport, project_path
 from autodev.web.models import StartRun
 from autodev.web.security import contained, redact
 
-ACTIVE = {"running", "cancelling"}
+ACTIVE = {"running", "cancelling", "pausing"}
 RUN_ID = re.compile(r"^[0-9a-f]{12}$")
+
+
+def parse_report(value):
+    model = ProjectReport if value.get("mode") == "project" else ParallelWorkflowReport
+    return model.model_validate(value)
 
 
 def public_report(report: ParallelWorkflowReport) -> dict:
@@ -32,7 +40,9 @@ def public_report(report: ParallelWorkflowReport) -> dict:
 
 
 class RunService:
-    def __init__(self, repositories: list[Path], config: AutoDevConfig, factory=None):
+    def __init__(
+        self, repositories: list[Path], config: AutoDevConfig, factory=None, project_factory=None
+    ):
         self.repositories = {}
         for supplied in repositories:
             root = supplied.resolve(strict=True)
@@ -49,6 +59,8 @@ class RunService:
             raise ValueError("At least one repository must be registered")
         self.config = config
         self.factory = factory or build_parallel_orchestrator
+        self.project_factory = project_factory or build_project_orchestrator
+        self.workflows = {}
         self.records: dict[str, dict] = {}
         self.tasks: dict[str, asyncio.Task] = {}
         self.revision = 0
@@ -58,7 +70,9 @@ class RunService:
         for repository_id, root in self.repositories.items():
             try:
                 base = contained(root, ".autodev/runs")
-                paths = sorted(base.glob("*/report.json"))[-200:]
+                paths = sorted([*base.glob("*/report.json"), *base.glob("*/project_report.json")])[
+                    -200:
+                ]
             except ValueError:
                 continue
             for path in paths:
@@ -68,12 +82,12 @@ class RunService:
                     safe = contained(root, path.relative_to(root).as_posix())
                     if safe.stat().st_size > 2_000_000:
                         continue
-                    report = ParallelWorkflowReport.model_validate_json(safe.read_bytes())
+                    report = parse_report(json.loads(safe.read_bytes()))
                     if report.run_id != path.parent.name:
                         continue
                     key = repository_id + ":" + report.run_id
                     self.records[key] = self.record(repository_id, report)
-                except (OSError, ValueError):
+                except (OSError, ValueError, TypeError, AttributeError):
                     continue
             try:
                 saved = contained(root, ".autodev/dashboard").glob("*.json")
@@ -107,13 +121,13 @@ class RunService:
                 for check in (round_data.get("checks") or {}).values():
                     if check:
                         check.pop("passed", None)
-            validated = ParallelWorkflowReport.model_validate(data)
+            validated = parse_report(data)
             if validated.run_id != path.stem:
                 return
             record["report"] = public_report(validated)
         if record["status"] in ACTIVE:
             record.update(status="interrupted", stage="interrupted")
-        elif record["status"] not in {"succeeded", "failed", "interrupted", "cancelled"}:
+        elif record["status"] not in {"succeeded", "failed", "interrupted", "cancelled", "paused"}:
             return
         events = record.get("events", [])
         if not isinstance(events, list) or any(
@@ -127,6 +141,8 @@ class RunService:
         if key in self.records:
             # The canonical report controls the outcome; preserve the dashboard's event log.
             self.records[key]["events"] = redact(record["events"])
+            if self.records[key]["status"] == "paused" and record["status"] == "cancelled":
+                self.records[key].update(status="cancelled", stage="cancelled")
         else:
             self.records[key] = redact(
                 {
@@ -155,6 +171,8 @@ class RunService:
             status = "interrupted"
         if report.integration_status == "cancelled":
             status = "cancelled"
+        if report.integration_status == "paused":
+            status = "paused"
         return redact(
             {
                 "id": repository_id + ":" + report.run_id,
@@ -223,11 +241,14 @@ class RunService:
                             "repository_id",
                             "instructions",
                             "example",
+                            "mode",
                         }
                     ),
                 }
             )
-            workflow = self.factory(config, root)
+            workflow = (self.project_factory if request.mode == "project" else self.factory)(
+                config, root
+            )
             run_id = workflow.integration.run_id
             if not RUN_ID.fullmatch(run_id):
                 raise ValueError("Invalid workflow run ID")
@@ -248,20 +269,82 @@ class RunService:
             self.persist(record)
             self.records[key] = record
 
-            def observe(event):
-                record["stage"] = event["stage"]
-                record["report"] = public_report(
-                    ParallelWorkflowReport.model_validate(event["report"])
-                )
-                record["events"] = (
-                    record["events"]
-                    + [redact({name: value for name, value in event.items() if name != "report"})]
-                )[-300:]
-                self.persist(record)
-                self.revision += 1
-
-            workflow.observer = observe
+            self.attach(workflow, record)
             self.tasks[key] = asyncio.create_task(self.execute(workflow, request, record))
+            self.tasks[key].add_done_callback(lambda task: self.finalize_cancelled(task, record))
+            self.revision += 1
+            return record
+
+    def attach(self, workflow, record):
+        def observe(event):
+            record["stage"] = event["stage"]
+            record["report"] = public_report(parse_report(event["report"]))
+            record["events"] = (
+                record["events"]
+                + [redact({name: value for name, value in event.items() if name != "report"})]
+            )[-300:]
+            self.persist(record)
+            self.revision += 1
+
+        workflow.observer = observe
+        self.workflows[record["id"]] = workflow
+
+    async def pause(self, key):
+        record, workflow = self.records[key], self.workflows.get(key)
+        if (
+            not workflow
+            or not hasattr(workflow, "request_pause")
+            or record["status"] not in {"running", "pausing"}
+        ):
+            raise RuntimeError("Only active project workflows support boundary pause")
+        workflow.request_pause()
+        record["status"] = "pausing"
+        self.persist(record)
+        return record
+
+    async def resume(self, key, confirmed=False):
+        async with self.lock:
+            if not confirmed:
+                raise RecoveryRequired("Review the checkpoint and explicitly confirm resume first")
+            if any(r["status"] in ACTIVE for r in self.records.values()):
+                raise RuntimeError("A workflow is already active")
+            record = self.records[key]
+            if record["status"] not in {"paused", "interrupted"}:
+                raise RecoveryRequired("Only paused/interrupted project workflows can resume")
+            root, run_id = self.repositories[record["repository_id"]], record["run_id"]
+            try:
+                file = contained(root, f".autodev/runs/{run_id}/project_report.json")
+                if file.stat().st_size > 2_000_000:
+                    raise ValueError("Report exceeds recovery limit")
+                live = ProjectReport.model_validate_json(file.read_bytes())
+                config = AutoDevConfig.model_validate(
+                    self.config.model_dump()
+                    | {
+                        "provider": "codex_cli",
+                        "sandbox": self.config.sandbox.model_dump() | {"backend": "docker"},
+                        "parallel": live.workflow_limits,
+                    }
+                )
+                workflow = self.project_factory(config, root, run_id=run_id)
+                with workflow.store.lock():
+                    await workflow.store.restore(live, config)
+            except RecoveryRequired:
+                raise
+            except (OSError, ValueError):
+                raise RecoveryRequired(
+                    "Cannot establish safe recovery; manual review and "
+                    "confirmation of a new run required"
+                ) from None
+            record.update(status="running", stage="resuming", finished_at="")
+            record.pop("error", None)
+            self.attach(workflow, record)
+            request = StartRun(
+                repository_id=record["repository_id"], instructions=live.request, mode="project"
+            )
+            self.persist(record)
+            self.tasks[key] = asyncio.create_task(
+                self.execute(workflow, request, record, resume=live)
+            )
             self.tasks[key].add_done_callback(lambda task: self.finalize_cancelled(task, record))
             self.revision += 1
             return record
@@ -273,7 +356,7 @@ class RunService:
             self.persist(record)
             self.revision += 1
 
-    async def execute(self, workflow, request, record):
+    async def execute(self, workflow, request, record, resume=None):
         try:
             seed, plan = None, None
             if request.example:
@@ -281,9 +364,21 @@ class RunService:
                 # Only trusted bundled fixtures, never a browser-supplied file path.
                 plan = TaskPlan.model_validate_json((bundled / "plan.json").read_bytes())
                 seed = bundled / "tests"
-            report = await workflow.run_task(request.instructions, seed_tests_dir=seed, plan=plan)
+            if request.mode == "project":
+                report = await workflow.run_task(request.instructions, resume=resume)
+            else:
+                report = await workflow.run_task(
+                    request.instructions, seed_tests_dir=seed, plan=plan
+                )
             record["report"] = public_report(report)
-            record["status"] = "succeeded" if report.succeeded else "failed"
+            record["status"] = (
+                "paused"
+                if report.integration_status == "paused"
+                else ("succeeded" if report.succeeded else "failed")
+            )
+        except RecoveryRequired as error:
+            record["status"] = "interrupted" if resume is not None else "failed"
+            record["error"] = str(error)
         except asyncio.CancelledError:
             record["status"] = "cancelled"
         except Exception:
@@ -300,7 +395,7 @@ class RunService:
     async def cancel(self, key):
         record = self.records[key]
         task = self.tasks.get(key)
-        if record["status"] == "running" and task and not task.done():
+        if record["status"] in {"running", "pausing"} and task and not task.done():
             record["status"] = "cancelling"
             self.persist(record)
             task.cancel()
@@ -318,7 +413,7 @@ class RunService:
         report = record.get("report") or {}
         paths = {
             path
-            for task in (report.get("plan") or {}).get("tasks", [])
+            for task in (report.get("specification") or report.get("plan") or {}).get("tasks", [])
             for path in task["owned_files"]
         }
         result = []
@@ -336,7 +431,10 @@ class RunService:
     def file_path(self, record, path):
         from autodev.planning import owned_path
 
-        owned_path(path)
+        if (record.get("report") or {}).get("mode") == "project":
+            project_path(path)
+        else:
+            owned_path(path)
         if not RUN_ID.fullmatch(record["run_id"]):
             raise ValueError("Invalid run ID")
         root = self.repositories[record["repository_id"]]

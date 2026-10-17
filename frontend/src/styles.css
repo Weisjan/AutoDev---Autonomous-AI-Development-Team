@@ -6,6 +6,123 @@
   font-size: 14px;
   color-scheme: dark;
 }
+
+.project-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px;
+  margin: 20px 0 28px;
+}
+.project-controls .checkbox {
+  margin: 0;
+}
+.milestone-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 14px;
+  margin-bottom: 26px;
+}
+.milestone-card {
+  background: #142332;
+  border: 1px solid #2c4052;
+  padding: 17px;
+  border-radius: 8px;
+  min-width: 0;
+}
+.milestone-card h3 {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.milestone-card p,
+.milestone-card li {
+  color: #91a9bf;
+  font-size: 11px;
+}
+.milestone-card ul {
+  padding-left: 16px;
+  line-height: 1.7;
+}
+.milestone-card small {
+  color: #7caf9d;
+  overflow-wrap: anywhere;
+}
+.dependency-graph {
+  overflow: auto;
+  border: 1px solid #2d4051;
+  border-radius: 8px;
+  background: #0c1722;
+  margin-bottom: 24px;
+  padding: 10px;
+}
+.dependency-graph svg {
+  display: block;
+  width: 100%;
+  min-width: 650px;
+  max-height: 500px;
+}
+.dag-node rect {
+  fill: #172c3d;
+  stroke: #40566c;
+}
+.dag-node.validated rect {
+  fill: #153d31;
+  stroke: #5ca58a;
+}
+.dag-node.running rect {
+  fill: #1b3a55;
+  stroke: #76a4d7;
+}
+.dag-node.failed rect {
+  fill: #442830;
+  stroke: #b46e73;
+}
+.dag-node text {
+  fill: #d2e5ef;
+  font:
+    12px Consolas,
+    monospace;
+}
+.dag-node .dag-status {
+  fill: #93b6a8;
+  font-size: 10px;
+}
+.project-spec-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 26px;
+  margin: 20px 0;
+}
+.project-spec-grid p,
+.project-spec-grid li {
+  color: #91a9bf;
+  font-size: 12px;
+  line-height: 1.8;
+}
+.project-panel details summary {
+  cursor: pointer;
+  color: #a6cdbd;
+}
+.checkpoint-history {
+  max-height: 270px;
+  overflow: auto;
+}
+.badge.validated,
+.badge.paused {
+  color: #92e0bd;
+  background: #17332c;
+  border-color: #2d5046;
+}
+.badge.pausing {
+  color: #d7be8b;
+  background: #332c20;
+  border-color: #655435;
+}
+@media (max-width: 780px) {
+  .project-spec-grid {
+    grid-template-columns: 1fr;
+  }
+}
 * {
   box-sizing: border-box;
 }

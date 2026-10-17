@@ -1,5 +1,49 @@
 # AutoDev Architecture
 
+## v0.4 Phase 1 project orchestration
+
+`ProjectArchitect` uses `CodexCLIProvider.architect` and the existing structured JSON subprocess
+transport to obtain a bounded `ProjectSpec`. Schema validation and a second baseline-test check
+run before developer execution. Project models explicitly describe repository files, technology,
+components, interfaces, tasks, milestones, acceptance/testing requirements, risks and assumptions.
+They exclude arbitrary commands and execution settings. The only execution profile is Python.
+
+`DependencyEngine` validates a DAG and selects ready tasks within the current milestone and
+configured concurrency. Unordered overlapping ownership is rejected globally; ordered dependent
+tasks may revise the same implementation/documentation path. `ProjectOrchestrator` reuses
+`ParallelOrchestrator._develop`, Developer/Reviewer agents, budgets, provider, Git scope checks,
+Workspace writes and `SandboxChecks`. Existing v0.3 task orchestration remains separate and intact.
+
+Tasks are created lazily using the integration HEAD after prerequisite validation, rather than the
+original source commit. Both filesystem context and model context therefore contain prerequisites.
+Every batch integrates commits, runs validated explicit existing test-file paths in Docker, and runs
+fixed Ruff. Previously validated tests remain selected and completed milestone tests are cumulative.
+The final full pytest suite is mandatory before final review. No generated code runs on the host;
+JSON data parsing and file reads do not execute generated content. Infrastructure errors stop with
+no corrections; code corrections are bounded to the current batch, global call/time limits and budget.
+
+`CheckpointStore` saves immutable, checksummed Pydantic snapshots only after verifying a clean
+commit boundary. Reports include milestone state, validated task IDs, task bases/attempt commits,
+configuration fingerprint, calls, elapsed execution time and checkpoint history. Atomic project
+reports mark an unsafe in-flight phase before new work starts. A safe resume reacquires an OS file
+lock, validates checkpoint consistency and Git identity/state, restores reservations, and skips
+validated tasks. An unsafe phase, changed source/worktree/configuration, wrong common Git directory,
+pending Git operation or invalid checkpoint refuses resume without mutation of generated source.
+There is no force override; manual recovery and explicit confirmation of a new run are required.
+
+FastAPI accepts `mode: project` on the existing start endpoint, and adds authenticated/CSRF-protected
+pause/resume endpoints. Resume requires `confirmed: true` and verifies state before scheduling,
+then verifies again under the workflow lock. The dashboard shows the actual specification, dependency
+edges, milestones, assignments, measured statuses, checkpoints, reports and supported controls.
+All v0.3 local network/file/authentication boundaries remain in force. Project preview adds the
+project-specific safe text-file allowlist; it never serves generated HTML as executable content.
+
+Limitations and a Windows demonstration with trusted stage tests are documented in README.
+Arbitrary language/package bootstrapping, generated authoritative tests, automatic replanning of
+validated prerequisites, rollback, unsafe recovery, source merges and pushes are not implemented.
+Offline tests use real Git with mocked models/checks, including barrier-proven overlapping work,
+dependent contexts, ordered shared-file revisions, checkpoints, interruption and browser pause/resume.
+
 ## Components
 
 `DeveloperAgent` wraps an injected model client returning a Pydantic `CodeGenerationResult`. It receives the user task, previous generated files, and failing pytest output.
@@ -50,7 +94,11 @@ The Docker backend runs:
 - `--tmpfs /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777`
 - a read-only bind-mounted generated workspace at `/workspace`
 
-The fixed pytest command remains unchanged. Container environment settings disable bytecode writes, pytest's cache, and third-party plugin autoloading so standard tests run against the read-only workspace. Tests that need temporary files must use `/tmp`, such as through pytest's `tmp_path` fixture.
+The sequential/independent fixed pytest command remains unchanged. Project stages select validated
+existing test files using the same fixed Python/pytest executable and options. Final project validation
+runs the complete predefined command. Container environment settings disable bytecode writes,
+pytest's cache, and third-party plugin autoloading so tests run against the read-only workspace.
+Tests that need temporary files must use `/tmp`, such as through pytest's `tmp_path` fixture.
 
 Each container receives a unique name. AutoDev kills the Docker CLI on timeout and attempts `docker rm --force` in a `finally` block, including when the caller is interrupted. Cleanup failure disables success; investigate the reported container before resuming execution. Python retains a bounded prefix of stdout and stderr while draining the pipes, and Docker does not persist container logs.
 

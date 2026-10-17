@@ -1,8 +1,97 @@
-# AutoDev v0.3
+# AutoDev v0.4 — Phase 1
 
 AutoDev is a small Python application where AI agents generate Python code, run a fixed pytest command in a sandbox backend, use failures for up to three repair attempts, and ask a separate reviewer agent for structured feedback.
 
 The default model provider is **Codex CLI**, using your existing ChatGPT login without an OpenAI API key. The existing `openai_api` backend is optional for sequential runs. AutoDev never switches to it after a Codex failure. Sequential development remains the default; `--parallel` enables up to two concurrent Codex developers.
+
+## Multi-stage projects (v0.4 Phase 1)
+
+In the dashboard's **New Task → Workflow type**, select **Multi-stage project**. The existing
+independent-task mode remains available. Project mode uses the real Codex provider and existing
+Docker sandbox; no API key or additional service is needed. Backend/frontend startup commands
+are in the next section.
+
+The Project Architect produces a validated specification with technology stack, repository file
+structure, components, interface contracts, tasks, dependencies, ordered milestones, acceptance
+criteria, testing requirements, risks and assumptions. The dashboard displays the specification,
+task dependency graph, actual agent attempts, milestone status, validation output and checkpoints.
+Plans are limited to 8 tasks (or the configured lower limit), 4 milestones, 80 structure paths and
+100 KB of specification JSON. Cycles, missing/later-stage dependencies, inconsistent component
+references, unsafe paths and unordered overlapping ownership are rejected before developer work.
+
+Independent ready tasks run concurrently, up to two developers. Each batch starts in new isolated
+Git worktrees based on the **current integration commit**. Dependencies become available only after
+their commits are integrated and their selected trusted tests plus Ruff pass. Previously validated
+task tests remain in later checks; completed milestone tests are cumulative. Each milestone gets
+a retained commit/checkpoint. The final complete pytest suite and Ruff must pass before final review.
+Corrections are bounded to three per batch and use the existing error classification: infrastructure
+failures never trigger developer corrections. Integration conflicts stop execution and retain state.
+
+**Phase 1 execution scope:** Python repositories with existing trusted tests and preinstalled
+sandbox dependencies. Tasks may write Python implementation, Markdown, JSON data, plain text and
+static HTML/CSS files. Existing tests, hidden files, dependency manifests, shell scripts and control
+configuration remain protected. JSON output is parsed as data before writing. This phase does not
+bootstrap arbitrary language toolchains, generate authoritative tests, install model-selected
+dependencies, build generated React/Node projects, launch generated services or execute generated
+code on the host. The existing AutoDev React dashboard is supported and unchanged as a stack.
+
+For a first real project demonstration, prepare a **new** separate repository with the bundled
+trusted tests. From the AutoDev root in PowerShell (choose an unused destination):
+
+```powershell
+$autoDevRoot = (Get-Location).Path
+$demoRoot = 'D:\Projects\AutoDev-Invoice-Demo'
+New-Item -ItemType Directory -Path $demoRoot -ErrorAction Stop
+Copy-Item -Path (Join-Path $autoDevRoot 'examples\project\tests') -Destination $demoRoot -Recurse
+Set-Content -Path (Join-Path $demoRoot '.gitignore') -Value '.autodev/' -Encoding ascii
+git -C $demoRoot init
+git -C $demoRoot add .gitignore tests
+git -C $demoRoot commit -m 'Add trusted project acceptance tests'
+Get-Content (Join-Path $autoDevRoot 'examples\project\task.md') -Raw
+# Start the API with access to that repository:
+.\.venv\Scripts\python.exe -m autodev.web --repo $demoRoot
+```
+
+These are commands **you** run to prepare/commit the trusted fixture, not operations the dashboard
+runs on your source checkout. Start the frontend as below, select the demo repository and project
+mode, paste `examples/project/task.md` into Task instructions, and start. Watch two independent core
+tasks, the dependent application, then documentation. Task tests must be separated into files that
+can pass at their stage; a single file importing all future components cannot serve an early stage.
+Docker Desktop must be running and the sandbox image built before validation.
+
+**Pause and recovery:** Pause requests finish the current integration/test batch, then stop at a
+verified checkpoint. Final review cannot be paused once started; cancellation is still available.
+Paused projects can resume after reviewing the checkpoint and explicitly confirming **Verify and
+resume project**. Backend restart loads project reports and checkpoint history from
+`.autodev/runs/<id>/project_report.json` and `checkpoints/NNN.json`. Boundary interruptions are shown
+as interrupted and can resume if verification passes. Already validated developer work is skipped.
+Full validation may be rerun before review. Active execution time and model-call reservations carry
+across resumes; changed configuration cannot reset limits.
+
+Recovery checks checkpoint schema/checksum, source branch/HEAD, integration commit, common Git
+repository identity, worktree paths/branches/HEADs, pending Git operations, safe attributes, and
+uncommitted/untracked integration/task changes. Source untracked notes remain untouched. A per-run
+OS file lock prevents concurrent resume across backend processes. Checkpoints are immutable; project
+reports update atomically. Source or worktree changes detected at a boundary stop the run, rather
+than becoming part of an accepted checkpoint.
+
+Mid-batch interruptions, dirty/changed worktrees, corrupt checkpoints, altered configuration and
+unfinished Git operations **block automatic resume**. Inspect and recover manually, then explicitly
+start a new run if needed; there is no force-resume or automatic reset/cleanup. The dashboard never
+claims an unsafe recovery succeeded. Runs cancelled through the cancellation control are terminal.
+Milestone checks repair only the current batch; failures requiring revisions of already validated
+prerequisites stop after the configured correction limit. Cross-stage replanning, rollback, task
+queues, remote execution and automatic merge/push remain unsupported. This phase is experimental,
+not a production-readiness claim.
+
+Offline verification includes the existing regression suite, project schema/DAG tests, measured
+parallel overlap, dependent worktree/context checks, real Git integration, checkpoint recovery and
+rejection tests, API restart/resume tests, React interactions, and browser tests for both workflows.
+Mock checks are explicitly labeled as test fixtures; they do not establish live Codex or Docker
+runtime behavior. Use the complete check commands in the dashboard section below.
+
+Recorded delivery results and the complete changed-file list are in
+[v0.4 Phase 1 verification](docs/v0.4-phase1-validation.md).
 
 ## Local web dashboard (Windows PowerShell)
 
@@ -105,7 +194,10 @@ extras; the core Docker image continues to run the v0.2 suite without web depend
 
 ## Current Safety Posture
 
-AutoDev never runs shell commands suggested by a model. The only test command is the predefined command in `autodev.runner.DEFAULT_PYTEST_COMMAND`.
+AutoDev never runs shell commands suggested by a model. Sequential and independent task runs use
+the predefined command in `autodev.runner.DEFAULT_PYTEST_COMMAND`. Project stages use the same
+fixed pytest executable/options with validated existing test-file paths; final validation uses
+the complete predefined suite.
 
 Generated files are written only inside the configured workspace directory. Paths are validated to reject absolute paths and `..` traversal.
 

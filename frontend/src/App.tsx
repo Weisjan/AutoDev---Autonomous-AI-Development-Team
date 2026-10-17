@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, session } from "./api";
+import ProjectPanel from "./ProjectPanel";
 import type {
   Attempt,
   Check,
@@ -11,7 +12,7 @@ import type {
 } from "./types";
 
 const active = (run?: Run) =>
-  !!run && ["running", "cancelling"].includes(run.status);
+  !!run && ["running", "cancelling", "pausing"].includes(run.status);
 const time = (value?: string) =>
   value
     ? new Date(value).toLocaleTimeString([], {
@@ -80,6 +81,7 @@ function NewTask({
     max_model_calls: 24,
     workflow_timeout_seconds: 1800,
     example: false,
+    mode: "task",
   });
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
@@ -96,8 +98,9 @@ function NewTask({
         <span className="chip">Codex CLI</span>
       </div>
       <p className="muted">
-        Describe the outcome and acceptance criteria. AutoDev plans independent
-        tasks and validates the integrated result in Docker.
+        Describe the outcome and acceptance criteria. Choose independent tasks
+        or a multi-stage Python project with validated architecture and
+        dependencies.
       </p>
       <form
         onSubmit={async (e) => {
@@ -113,6 +116,19 @@ function NewTask({
           }
         }}
       >
+        <label>
+          Workflow type
+          <select
+            value={form.mode || "task"}
+            onChange={(e) => {
+              set("mode", e.target.value as "task" | "project");
+              set("example", false);
+            }}
+          >
+            <option value="task">Independent tasks (v0.3)</option>
+            <option value="project">Multi-stage project (v0.4 Phase 1)</option>
+          </select>
+        </label>
         <label>
           Repository
           <select
@@ -149,6 +165,7 @@ function NewTask({
         <label className="checkbox">
           <input
             type="checkbox"
+            disabled={form.mode === "project"}
             checked={form.example}
             onChange={(e) => {
               set("example", e.target.checked);
@@ -241,7 +258,15 @@ function CheckOutput({ name, check }: { name: string; check: Check }) {
   );
 }
 
-function RunDetail({ run, cancel }: { run: Run; cancel: () => Promise<void> }) {
+function RunDetail({
+  run,
+  cancel,
+  changed,
+}: {
+  run: Run;
+  cancel: () => Promise<void>;
+  changed: (run: Run) => void;
+}) {
   const report = run.report;
   const [files, setFiles] = useState<{ id: string; path: string }[]>([]);
   const [preview, setPreview] = useState<{ path: string; text: string } | null>(
@@ -292,10 +317,13 @@ function RunDetail({ run, cancel }: { run: Run; cancel: () => Promise<void> }) {
     : undefined;
   const tasks = report?.tasks || [];
   const completed = tasks.filter((t) =>
-    ["completed", "integrated"].includes(t.status),
+    ["completed", "integrated", "validated"].includes(t.status),
   ).length;
   return (
     <>
+      {report?.mode === "project" && (
+        <ProjectPanel key={run.id} run={run} changed={changed} />
+      )}
       <section className="panel run-heading">
         <div>
           <div className="eyebrow">RUN {run.run_id}</div>
@@ -395,7 +423,7 @@ function RunDetail({ run, cancel }: { run: Run; cancel: () => Promise<void> }) {
         </div>
         <div className="agents">
           <Agent
-            name="Planner"
+            name={report?.mode === "project" ? "Architect" : "Planner"}
             status={
               report?.plan && !report.planner_execution
                 ? "supplied_plan"
@@ -404,7 +432,8 @@ function RunDetail({ run, cancel }: { run: Run; cancel: () => Promise<void> }) {
             attempt={report?.planner_execution}
           >
             <p>
-              {report?.plan?.summary ||
+              {report?.specification?.summary ||
+                report?.plan?.summary ||
                 "Decomposes the request into independent tasks."}
             </p>
           </Agent>
@@ -495,9 +524,11 @@ function RunDetail({ run, cancel }: { run: Run; cancel: () => Promise<void> }) {
               round.checks && (
                 <div key={round.number}>
                   <h3>
-                    {round.number === 0
-                      ? "Initial validation"
-                      : `Correction ${round.number}`}
+                    {report.mode === "project"
+                      ? `${round.milestone_id} · ${round.correction_attempt ? `correction ${round.correction_attempt}` : "validation"}`
+                      : round.number === 0
+                        ? "Initial validation"
+                        : `Correction ${round.number}`}
                   </h3>
                   {round.checks.environment && (
                     <CheckOutput
@@ -654,6 +685,7 @@ export default function App() {
       const id = selectedId.current || history[0]?.id;
       if (id) {
         const detail = await api<Run>(`/runs/${id}`);
+        setRuns(history.map((item) => (item.id === detail.id ? detail : item)));
         if (!selectedId.current || selectedId.current === id) {
           selectedId.current = id;
           setSelected(detail);
@@ -753,7 +785,7 @@ export default function App() {
             Authentication is checked when a run starts.
           </p>
           <div className="version">
-            AUTODEV v0.3 <span>LOCAL ONLY</span>
+            AUTODEV v0.4 <span>LOCAL ONLY</span>
           </div>
         </div>
       </aside>
@@ -841,6 +873,10 @@ export default function App() {
               )}
               {selected ? (
                 <RunDetail
+                  changed={(run) => {
+                    setSelected(run);
+                    void refresh();
+                  }}
                   run={selected}
                   cancel={async () => {
                     setSelected(
@@ -948,7 +984,7 @@ export default function App() {
           )}
           <footer>
             AutoDev <span>Local workspace. No automatic push or merge.</span>
-            <span>v0.3.0</span>
+            <span>v0.4.0</span>
           </footer>
         </div>
       </main>

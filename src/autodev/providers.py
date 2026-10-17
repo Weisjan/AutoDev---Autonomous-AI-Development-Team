@@ -118,6 +118,24 @@ class CodexCLIProvider:
         )
         return await self._run(prompt, TaskPlan, self._developer_model)
 
+    async def architect(self, request: str, files: list[GeneratedFile], max_tasks: int):
+        from autodev.project_models import ProjectSpec
+
+        prompt = (
+            f"Design a bounded Python repository project with at most {max_tasks} tasks and four "
+            "ordered milestones. Return a full specification, components, interfaces, risks, "
+            "assumptions, explicit dependency DAG and exact task ownership. Tasks may own Python "
+            "implementation, Markdown, JSON data or static HTML/CSS, never tests, dependencies, "
+            "shell scripts, hidden files or control files. Use only existing dependencies and "
+            "existing trusted Python test files under tests/. Each task's test_paths must pass "
+            "after that task and its dependencies are implemented; milestone tests validate the "
+            "whole milestone. Do not invent existing tests. The final full pytest suite must pass. "
+            "Overlapping ownership requires an explicit transitive dependency. Only Python/Docker "
+            "execution is supported. No install, host commands, paid API, pushes "
+            "or source merges.\n" + _developer_prompt(request, files, None)
+        )
+        return await self._run(prompt, ProjectSpec, self._developer_model)
+
     async def generate_code(
         self, task: str, previous_files: list[GeneratedFile], test_output: str | None
     ) -> CodeGenerationResult:

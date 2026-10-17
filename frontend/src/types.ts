@@ -38,6 +38,24 @@ export type DevTask = {
   attempts: Attempt[];
 };
 export type Report = {
+  mode?: "project";
+  specification?: ProjectSpecification;
+  milestones?: {
+    id: string;
+    status: string;
+    started_at: string;
+    finished_at: string;
+    commit?: string;
+  }[];
+  checkpoint_history?: {
+    number: number;
+    at: string;
+    label: string;
+    commit: string;
+  }[];
+  checkpoint_safe?: boolean;
+  validated_tasks?: string[];
+  active_milestone?: string;
   run_id: string;
   succeeded: boolean;
   integration_status: string;
@@ -50,6 +68,8 @@ export type Report = {
   tasks: DevTask[];
   rounds: {
     number: number;
+    milestone_id?: string;
+    correction_attempt?: number;
     checks?: { pytest: Check; ruff: Check; environment?: Check };
   }[];
   review?: {
@@ -80,6 +100,7 @@ export type Run = {
   events?: { stage: string; at: string; task_id?: string; error?: string }[];
 };
 export type Start = {
+  mode?: "task" | "project";
   repository_id: string;
   instructions: string;
   concurrency: number;
@@ -99,4 +120,32 @@ export type Settings = {
   docker_image: string;
   merging: string;
   cancellation: string;
+};
+
+export type ProjectSpecification = {
+  title: string;
+  summary: string;
+  technology_stack: string[];
+  repository_structure: string[];
+  components: { id: string; responsibility: string; files: string[] }[];
+  interfaces: { source: string; target: string; contract: string }[];
+  tasks: {
+    id: string;
+    description: string;
+    owned_files: string[];
+    depends_on: string[];
+    test_paths: string[];
+    acceptance_criteria: string[];
+  }[];
+  milestones: {
+    id: string;
+    description: string;
+    task_ids: string[];
+    acceptance_criteria: string[];
+    test_paths: string[];
+  }[];
+  acceptance_criteria: string[];
+  testing_requirements: string[];
+  risks: string[];
+  assumptions: string[];
 };
