@@ -8,6 +8,12 @@ run before developer execution. Project models explicitly describe repository fi
 components, interfaces, tasks, milestones, acceptance/testing requirements, risks and assumptions.
 They exclude arbitrary commands and execution settings. The only execution profile is Python.
 
+The Codex schema advertises portable file/test-path constraints and bounded ownership. The
+architect prompt lists exact trusted test files. Final stdout is parsed as one JSON document;
+syntax/encoding failures and Pydantic schema/consistency failures have distinct provider errors.
+Reports retain bounded, redacted field/rule diagnostics, with no raw response persistence or
+implicit model retries. See [the incident analysis](architect-output-diagnostics.md).
+
 `DependencyEngine` validates a DAG and selects ready tasks within the current milestone and
 configured concurrency. Unordered overlapping ownership is rejected globally; ordered dependent
 tasks may revise the same implementation/documentation path. `ProjectOrchestrator` reuses

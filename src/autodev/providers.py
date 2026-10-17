@@ -50,6 +50,100 @@ class ProviderResponseError(ProviderError):
     """The provider returned missing, oversized, or invalid structured output."""
 
 
+class ProviderJSONParseError(ProviderResponseError):
+    """The final response is not a single UTF-8 JSON document."""
+
+
+class ProviderSchemaError(ProviderResponseError):
+    """JSON parsed, but typed fields or application invariants failed validation."""
+
+
+# These messages originate in AutoDev validators, never in model-supplied input.
+_VALIDATION_RULES = {
+    "Unsafe or nonportable project path": "unsafe_project_path",
+    "Testing requires explicit existing Python files under tests/": "test_file_required",
+    "Project ownership excludes tests, dependencies, scripts and control files": (
+        "protected_ownership"
+    ),
+    "Task ownership must be unique and bounded": "ownership_limit_or_duplicate",
+    "Project plan exceeds its size limit": "plan_size_limit",
+    "Repository structure contains aliases": "path_aliases",
+    "Repository structure has a file/directory collision": "file_directory_collision",
+    "Duplicate task/component IDs": "duplicate_ids",
+    "Duplicate milestone IDs": "duplicate_milestones",
+    "Task files are absent from the repository structure": "missing_structure_file",
+    "Components must cover task-owned structure paths": "component_file_coverage",
+    "Unknown interface component": "unknown_interface_component",
+    "Milestones must partition all tasks exactly once": "milestone_task_partition",
+    "Missing milestone task assignment": "missing_milestone_task",
+    "Task dependency cycle": "dependency_cycle",
+    "Missing or later-milestone dependency": "invalid_dependency",
+    "Overlapping owners must have an explicit dependency order": "ownership_dependency_order",
+}
+
+
+def _schema_error(response_type, error: ValidationError) -> ProviderSchemaError:
+    fields = set()
+
+    def collect(value):
+        if isinstance(value, dict):
+            fields.update(value.get("properties", {}))
+            for child in value.values():
+                collect(child)
+        elif isinstance(value, list):
+            for child in value:
+                collect(child)
+
+    collect(response_type.model_json_schema())
+    issues = []
+    for issue in error.errors(include_input=False, include_url=False)[:5]:
+        location = (
+            ".".join(
+                str(part) if isinstance(part, int) or part in fields else "<extra>"
+                for part in issue["loc"][:8]
+            )
+            or "root"
+        )
+        code = issue["type"]
+        rule = _VALIDATION_RULES.get(str(issue.get("ctx", {}).get("error", "")))
+        issues.append(f"{location} [{code}{':' + rule if rule else ''}]")
+    return ProviderSchemaError(
+        f"Codex CLI returned valid JSON for {response_type.__name__}, but schema validation "
+        f"failed: {'; '.join(issues)}. Response text and validation inputs were not recorded."
+    )
+
+
+def _parse_response(payload: bytes, response_type: type[ResponseModel]) -> ResponseModel:
+    def reject_constant(value):
+        raise ValueError("Non-finite JSON number")
+
+    try:
+        text = payload.decode("utf-8", errors="strict")
+        json.loads(text, parse_constant=reject_constant)
+    except json.JSONDecodeError as error:
+        raise ProviderJSONParseError(
+            f"Codex CLI returned malformed JSON for {response_type.__name__} "
+            f"at line {error.lineno}, column {error.colno} (json_parse). "
+            "Expected one final JSON document, not prose, fences or a JSONL event stream. "
+            "Response text was not recorded."
+        ) from None
+    except (UnicodeError, ValueError):
+        raise ProviderJSONParseError(
+            f"Codex CLI returned invalid UTF-8/JSON encoding or number for "
+            f"{response_type.__name__} "
+            "(json_parse). Response text was not recorded."
+        ) from None
+    try:
+        return response_type.model_validate_json(payload, strict=True)
+    except ValidationError as error:
+        if any(issue["type"] == "json_invalid" for issue in error.errors(include_input=False)):
+            raise ProviderJSONParseError(
+                f"Codex CLI could not decode JSON for {response_type.__name__} (json_parse). "
+                "Response text was not recorded."
+            ) from None
+        raise _schema_error(response_type, error) from None
+
+
 class ProviderRateLimitError(ProviderError):
     """ChatGPT usage limits were reached; no retries or paid fallback are implicit."""
 
@@ -121,6 +215,11 @@ class CodexCLIProvider:
     async def architect(self, request: str, files: list[GeneratedFile], max_tasks: int):
         from autodev.project_models import ProjectSpec
 
+        tests = sorted(
+            file.path
+            for file in files
+            if file.path.startswith("tests/") and file.path.endswith(".py")
+        )
         prompt = (
             f"Design a bounded Python repository project with at most {max_tasks} tasks and four "
             "ordered milestones. Return a full specification, components, interfaces, risks, "
@@ -132,7 +231,14 @@ class CodexCLIProvider:
             "whole milestone. Do not invent existing tests. The final full pytest suite must pass. "
             "Overlapping ownership requires an explicit transitive dependency. Only Python/Docker "
             "execution is supported. No install, host commands, paid API, pushes "
-            "or source merges.\n" + _developer_prompt(request, files, None)
+            "or source merges. Repository structure contains FILE paths only, no directory entries "
+            "or hidden/control paths. Every owned/component file must appear in that structure. "
+            "Interfaces reference component IDs. Every task belongs to exactly one milestone. "
+            "Choose test_paths only from the exact trusted file paths below; never use tests/, "
+            "tests/*.py, pytest commands or ::test selectors.\n"
+            f"Trusted test files: {json.dumps(tests)}\nProject request:\n{request}\n"
+            "Read-only baseline context (not files to return or modify):\n"
+            + json.dumps([file.model_dump() for file in files])
         )
         return await self._run(prompt, ProjectSpec, self._developer_model)
 
@@ -272,13 +378,7 @@ class CodexCLIProvider:
                     "CLI version, connectivity, and ChatGPT usage limits. "
                     "No provider fallback was attempted."
                 )
-            try:
-                return response_type.model_validate_json(stdout, strict=True)
-            except ValidationError:
-                # Pydantic errors can contain model output; keep them out of logs/tracebacks.
-                raise ProviderResponseError(
-                    f"Codex CLI returned invalid JSON for {response_type.__name__}."
-                ) from None
+            return _parse_response(stdout, response_type)
 
 
 async def _exchange(

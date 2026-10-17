@@ -212,6 +212,10 @@ class ProjectOrchestrator(ParallelOrchestrator):
                     self.architect.design(report.request, await self.snapshot()),
                     self.config.parallel.agent_timeout_seconds,
                 )
+            except ProviderError as error:
+                # Provider diagnostics omit raw output and validation inputs.
+                report.planner_execution.error = str(error)
+                raise
             except BaseException:
                 report.planner_execution.error = "Architecture failed validation or was interrupted"
                 raise

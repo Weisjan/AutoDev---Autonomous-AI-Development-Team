@@ -19,6 +19,9 @@ Plans are limited to 8 tasks (or the configured lower limit), 4 milestones, 80 s
 100 KB of specification JSON. Cycles, missing/later-stage dependencies, inconsistent component
 references, unsafe paths and unordered overlapping ownership are rejected before developer work.
 
+For architect JSON/schema diagnostics and recovery from a failed planning call, see
+[the structured-output investigation](docs/architect-output-diagnostics.md).
+
 Independent ready tasks run concurrently, up to two developers. Each batch starts in new isolated
 Git worktrees based on the **current integration commit**. Dependencies become available only after
 their commits are integrated and their selected trusted tests plus Ruff pass. Previously validated

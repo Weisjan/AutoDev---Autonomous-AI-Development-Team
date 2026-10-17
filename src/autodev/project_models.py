@@ -13,6 +13,34 @@ from autodev.schemas import GeneratedFile
 
 Text = Annotated[str, Field(min_length=1, max_length=2000)]
 Identifier = Annotated[str, Field(pattern=r"^[a-z][a-z0-9_-]{0,39}$")]
+# Keep the transport schema aligned with the path checks below. No glob, directory,
+# command-line or pytest node-selector strings may masquerade as test file paths.
+_SEGMENT = r"[A-Za-z0-9_-](?:[A-Za-z0-9_.-]*[A-Za-z0-9_-])?"
+ProjectFilePath = Annotated[
+    str,
+    Field(
+        max_length=180,
+        pattern=rf"^{_SEGMENT}(?:/{_SEGMENT})*$",
+        description="Portable relative file path; no directories, globs or hidden paths.",
+    ),
+]
+OwnedFilePath = Annotated[
+    str,
+    Field(
+        max_length=180,
+        pattern=rf"^(?:{_SEGMENT}/)*{_SEGMENT}\.(?:py|md|json|txt|html|css)$",
+        description="Exact code/documentation/data file; tests and control files are forbidden.",
+    ),
+]
+TestFilePath = Annotated[
+    str,
+    Field(
+        max_length=180,
+        pattern=rf"^tests/(?:{_SEGMENT}/)*{_SEGMENT}\.py$",
+        description="Exact existing trusted .py file under tests/. No directories, globs, commands "
+        "or ::test selectors. AutoDev runs the final full suite separately.",
+    ),
+]
 
 
 def project_path(value: str, *, writable=True) -> str:
@@ -56,8 +84,13 @@ def test_path(value: str) -> str:
 
 
 class ProjectTask(DevelopmentTask):
-    depends_on: list[Identifier] = Field(default_factory=list, max_length=8)
-    test_paths: list[str] = Field(min_length=1, max_length=20)
+    owned_files: list[OwnedFilePath] = Field(min_length=1, max_length=10)
+    depends_on: list[Identifier] = Field(
+        default_factory=list,
+        max_length=8,
+        description="Prerequisite task IDs; no cycles, self or later-milestone references.",
+    )
+    test_paths: list[TestFilePath] = Field(min_length=1, max_length=20)
 
     @field_validator("owned_files")
     @classmethod
@@ -76,13 +109,17 @@ class Component(BaseModel):
     model_config = ConfigDict(extra="forbid")
     id: Identifier
     responsibility: Text
-    files: list[str] = Field(min_length=1, max_length=20)
+    files: list[ProjectFilePath] = Field(
+        min_length=1,
+        max_length=20,
+        description="Exact paths present in repository_structure; cover every task-owned file.",
+    )
 
 
 class Interface(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    source: Identifier
-    target: Identifier
+    source: Identifier = Field(description="Existing component ID, not a task or milestone ID.")
+    target: Identifier = Field(description="Existing component ID, not a task or milestone ID.")
     contract: Text
 
 
@@ -90,9 +127,13 @@ class Milestone(BaseModel):
     model_config = ConfigDict(extra="forbid")
     id: Identifier
     description: Text
-    task_ids: list[Identifier] = Field(min_length=1, max_length=8)
+    task_ids: list[Identifier] = Field(
+        min_length=1,
+        max_length=8,
+        description="Every project task belongs to exactly one milestone, in dependency order.",
+    )
     acceptance_criteria: list[Text] = Field(min_length=1, max_length=10)
-    test_paths: list[str] = Field(min_length=1, max_length=20)
+    test_paths: list[TestFilePath] = Field(min_length=1, max_length=20)
 
     @field_validator("test_paths")
     @classmethod
@@ -106,7 +147,12 @@ class ProjectSpec(BaseModel):
     summary: Text
     execution_profile: Literal["python"] = "python"
     technology_stack: list[Text] = Field(min_length=1, max_length=8)
-    repository_structure: list[str] = Field(min_length=1, max_length=80)
+    repository_structure: list[ProjectFilePath] = Field(
+        min_length=1,
+        max_length=80,
+        description="File paths only, including every component/task file. Omit directory entries "
+        "such as tests/ and hidden/control files such as .gitignore.",
+    )
     components: list[Component] = Field(min_length=1, max_length=12)
     interfaces: list[Interface] = Field(max_length=20)
     tasks: list[ProjectTask] = Field(min_length=1, max_length=8)
