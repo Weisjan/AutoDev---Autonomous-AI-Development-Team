@@ -172,11 +172,13 @@ class ProjectModels:
 class ProjectChecks:
     def __init__(self):
         self.calls = []
+        self.lint_calls = []
         self.failure = None
         self.failures_left = 0
 
-    async def run(self, workspace, test_paths=None):
+    async def run(self, workspace, test_paths=None, *, lint_paths=None):
         self.calls.append(test_paths)
+        self.lint_calls.append(lint_paths)
         failed = self.failures_left > 0
         self.failures_left -= 1
         result = self.failure if failed else None

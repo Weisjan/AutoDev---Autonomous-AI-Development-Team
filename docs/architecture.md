@@ -24,9 +24,24 @@ Tasks are created lazily using the integration HEAD after prerequisite validatio
 original source commit. Both filesystem context and model context therefore contain prerequisites.
 Every batch integrates commits, runs validated explicit existing test-file paths in Docker, and runs
 fixed Ruff. Previously validated tests remain selected and completed milestone tests are cumulative.
+Project Ruff targets exact, cumulative integrated task-owned Python paths, using the same fixed
+strict rules with isolated configuration, no cache and no write/fix options. Protected/unowned
+baseline files are not linted by project stages. The exact command and scope remain in each report.
+Unexpected Ruff diagnostics outside integrated ownership are classified as baseline failures and
+stop without corrections; unattributed or earlier-milestone lint failures outside the current
+repairable batch also stop for manual review. Functional pytest failures remain eligible for the
+existing bounded correction policy. Infrastructure errors retain their separate classification.
 The final full pytest suite is mandatory before final review. No generated code runs on the host;
 JSON data parsing and file reads do not execute generated content. Infrastructure errors stop with
 no corrections; code corrections are bounded to the current batch, global call/time limits and budget.
+
+The architect no longer demands four milestones. It preserves explicit requested counts within
+the four-milestone Phase 1 limit. Recognized numbered `Name: file...` headings additionally constrain
+milestone name/order, file grouping and explicitly independent tasks before any developers start.
+Unrecognized prose remains model-guided and receives the normal ProjectSpec/DAG validation.
+Plans are rejected rather than silently regrouped. Existing scheduling already runs ready tasks
+concurrently within a milestone and waits for validated integration before advancing.
+See [the validation regression report](project-validation.md).
 
 `CheckpointStore` saves immutable, checksummed Pydantic snapshots only after verifying a clean
 commit boundary. Reports include milestone state, validated task IDs, task bases/attempt commits,

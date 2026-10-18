@@ -213,16 +213,27 @@ class CodexCLIProvider:
         return await self._run(prompt, TaskPlan, self._developer_model)
 
     async def architect(self, request: str, files: list[GeneratedFile], max_tasks: int):
+        from autodev.architect import milestone_requirements
         from autodev.project_models import ProjectSpec
 
+        count, _ = milestone_requirements(request)
+        milestone_instruction = (
+            f"exactly {count} ordered milestones as requested"
+            if count is not None
+            else "at most four ordered milestones"
+        )
         tests = sorted(
             file.path
             for file in files
             if file.path.startswith("tests/") and file.path.endswith(".py")
         )
         prompt = (
-            f"Design a bounded Python repository project with at most {max_tasks} tasks and four "
-            "ordered milestones. Return a full specification, components, interfaces, risks, "
+            f"Design a bounded Python repository project with at most {max_tasks} tasks and "
+            f"{milestone_instruction}. Preserve the user's milestone names, ordering and file "
+            "groupings. Independent tasks in the same requested milestone must remain in that "
+            "milestone with no artificial dependencies, so they can run concurrently. Dependent "
+            "tasks must list their real prerequisites and remain in the requested later stages. "
+            "Return a full specification, components, interfaces, risks, "
             "assumptions, explicit dependency DAG and exact task ownership. Tasks may own Python "
             "implementation, Markdown, JSON data or static HTML/CSS, never tests, dependencies, "
             "shell scripts, hidden files or control files. Use only existing dependencies and "

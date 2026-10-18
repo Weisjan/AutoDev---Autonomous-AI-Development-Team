@@ -13,6 +13,10 @@ class IntegratedChecks(BaseModel):
     environment: TestRunResult | None = None
 
     @property
+    def baseline_failed(self) -> bool:
+        return self.pytest.baseline_failed or self.ruff.baseline_failed
+
+    @property
     def infrastructure_failed(self) -> bool:
         return any(
             result.infrastructure_failed

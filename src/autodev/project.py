@@ -32,6 +32,7 @@ from autodev.project_models import (
 )
 from autodev.providers import ProviderError
 from autodev.schemas import GeneratedFile
+from autodev.validation import classify_baseline_lint, lint_failure_paths
 from autodev.web.security import contained
 from autodev.workspace import WorkspaceViolation
 
@@ -284,14 +285,20 @@ class ProjectOrchestrator(ParallelOrchestrator):
         self.notify("validating_project")
         final = ProjectRound(number=len(report.rounds), milestone_id="final")
         report.rounds.append(final)
-        final.checks = await self.checks.run(manager.integration.path)
+        final.checks = await self.validate_project(report)
         self.notify("checks_finished")
         if not final.checks.passed:
             report.integration_status = (
-                "infrastructure_failed" if final.checks.infrastructure_failed else "checks_failed"
+                "infrastructure_failed"
+                if final.checks.infrastructure_failed
+                else "baseline_failed"
+                if final.checks.baseline_failed
+                else "checks_failed"
             )
             report.stopped_reason = (
-                "Final full-suite validation failed; no later milestones will run"
+                "Final validation failed outside developer ownership; baseline review required"
+                if final.checks.baseline_failed
+                else "Final full-suite validation failed; no later milestones will run"
             )
             return
         if await self.boundary(report, "project_validation_passed"):
@@ -358,7 +365,7 @@ class ProjectOrchestrator(ParallelOrchestrator):
                     report.integration_commit = await self.integration.integrate(commit)
                     current.commits.append(report.integration_commit)
             self.notify("validating")
-            current.checks = await self.checks.run(self.integration.integration.path, test_paths)
+            current.checks = await self.validate_project(report, test_paths)
             self.notify("checks_finished")
             if current.checks.infrastructure_failed or current.checks.unavailable:
                 report.integration_status = "infrastructure_failed"
@@ -366,10 +373,33 @@ class ProjectOrchestrator(ParallelOrchestrator):
                     "Validation environment unavailable; no developer correction requested"
                 )
                 return False
+            if current.checks.baseline_failed:
+                report.integration_status = "baseline_failed"
+                report.stopped_reason = (
+                    "Protected/unowned baseline validation failed; "
+                    "no developer corrections requested"
+                )
+                return False
             if current.checks.passed:
                 return True
             feedback = current.checks.failure_output()
-            owners = responsible_tasks(SimpleNamespace(tasks=[t.task for t in selected]), feedback)
+            owners = set()
+            if not current.checks.pytest.passed:
+                owners |= responsible_tasks(
+                    SimpleNamespace(tasks=[t.task for t in selected]),
+                    current.checks.pytest.combined_output(),
+                )
+            if not current.checks.ruff.passed:
+                paths = lint_failure_paths(current.checks.ruff)
+                repairable = {p for task in selected for p in task.task.owned_files}
+                if not paths or paths - repairable:
+                    report.integration_status = "checks_failed"
+                    report.stopped_reason = (
+                        "Ruff failure cannot be attributed to the current batch; "
+                        "no developer corrections requested. Inspect retained validation output."
+                    )
+                    return False
+                owners |= {t.task.id for t in selected if paths & set(t.task.owned_files)}
             current.correction_tasks = sorted(owners)
             pending = [t for t in selected if t.task.id in owners]
             context = await self.snapshot()
@@ -380,6 +410,22 @@ class ProjectOrchestrator(ParallelOrchestrator):
             "Project correction limit reached",
         )
         return False
+
+    async def validate_project(self, report, test_paths=None):
+        # Cumulative scope includes earlier milestones, including files modified in place.
+        # Never lint future, not-yet-integrated paths or only the current batch.
+        paths = {
+            path
+            for task in report.tasks
+            if any(a.commit for a in task.attempts)
+            for path in task.task.owned_files
+            if path.endswith(".py")
+        }
+        checks = await self.checks.run(
+            self.integration.integration.path, test_paths, lint_paths=sorted(paths)
+        )
+        classify_baseline_lint(checks.ruff, paths)
+        return checks
 
 
 def build_project_orchestrator(config, repo, run_id=None):

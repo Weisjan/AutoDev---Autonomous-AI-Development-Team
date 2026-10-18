@@ -24,8 +24,9 @@ from autodev.parallel_schemas import (
 from autodev.planning import TaskPlan, TaskPlanner, responsible_tasks
 from autodev.providers import CodexCLIProvider, ProviderError
 from autodev.runner import DEFAULT_PYTEST_COMMAND
-from autodev.sandbox import DEFAULT_RUFF_COMMAND, DockerSandbox, DryRunSandbox
+from autodev.sandbox import DEFAULT_RUFF_COMMAND, DockerSandbox, DryRunSandbox, ruff_command
 from autodev.schemas import CodeGenerationResult, GeneratedFile, TestRunResult
+from autodev.validation import classify_baseline_lint
 from autodev.workspace import Workspace, WorkspaceViolation
 
 
@@ -46,7 +47,16 @@ class SandboxChecks:
             else DryRunSandbox()
         )
 
-    async def run(self, workspace: Path, test_paths: list[str] | None = None) -> IntegratedChecks:
+    async def run(
+        self,
+        workspace: Path,
+        test_paths: list[str] | None = None,
+        *,
+        lint_paths: list[str] | None = None,
+    ) -> IntegratedChecks:
+        lint_command = ruff_command(lint_paths) if lint_paths else DEFAULT_RUFF_COMMAND
+        if lint_paths == []:
+            lint_command = [*DEFAULT_RUFF_COMMAND[:4], *DEFAULT_RUFF_COMMAND[5:], "--"]
         command = DEFAULT_PYTEST_COMMAND
         if test_paths is not None:
             from autodev.project_models import test_path
@@ -81,7 +91,7 @@ class SandboxChecks:
             return IntegratedChecks(
                 environment=environment,
                 pytest=blocked(command),
-                ruff=blocked(DEFAULT_RUFF_COMMAND),
+                ruff=blocked(lint_command),
             )
         pytest = await self._blocking(
             self.sandbox.run_pytest,
@@ -90,12 +100,27 @@ class SandboxChecks:
             self.config.sandbox.timeout_seconds,
             self.config.sandbox.max_output_chars,
         )
-        ruff = await self._blocking(
-            self.sandbox.run_ruff,
-            workspace,
-            self.config.sandbox.timeout_seconds,
-            self.config.sandbox.max_output_chars,
-        )
+        if lint_paths == []:
+            ruff = TestRunResult(
+                command=lint_command,
+                exit_code=0,
+                reason="No integrated task-owned Python files; no Ruff process was executed.",
+            )
+        else:
+            arguments = (lint_paths,) if lint_paths is not None else ()
+            ruff = await self._blocking(
+                self.sandbox.run_ruff,
+                workspace,
+                self.config.sandbox.timeout_seconds,
+                self.config.sandbox.max_output_chars,
+                *arguments,
+            )
+        if lint_paths is not None:
+            scope = (
+                "Ruff scope: all integrated task-owned Python files. Protected/unowned baseline "
+                "files are excluded from lint; trusted functional tests remain enabled."
+            )
+            ruff.reason = f"{ruff.reason}\n{scope}" if ruff.reason else scope
         return IntegratedChecks(environment=environment, pytest=pytest, ruff=ruff)
 
     @staticmethod
@@ -277,6 +302,9 @@ class ParallelOrchestrator:
             report.integration_status = "integrated"
             self.notify("validating")
             current.checks = await self.checks.run(self.integration.integration.path)
+            classify_baseline_lint(
+                current.checks.ruff, {p for t in report.tasks for p in t.task.owned_files}
+            )
             self.notify("checks_finished")
             if current.checks.infrastructure_failed:
                 report.integration_status = "infrastructure_failed"
@@ -289,6 +317,12 @@ class ParallelOrchestrator:
                 report.integration_status = "validation_unavailable"
                 report.stopped_reason = (
                     "pytest or Ruff execution unavailable; success cannot be verified"
+                )
+                return
+            if current.checks.baseline_failed:
+                report.integration_status = "baseline_failed"
+                report.stopped_reason = (
+                    "Protected/unowned baseline lint failed; no developer corrections requested"
                 )
                 return
             if current.checks.passed:

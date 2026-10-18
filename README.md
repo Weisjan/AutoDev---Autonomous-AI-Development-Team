@@ -30,6 +30,13 @@ a retained commit/checkpoint. The final complete pytest suite and Ruff must pass
 Corrections are bounded to three per batch and use the existing error classification: infrastructure
 failures never trigger developer corrections. Integration conflicts stop execution and retain state.
 
+Project-mode Ruff checks apply the full fixed rule set to **all integrated task-owned Python
+files**, cumulatively across milestones. Protected tests and unrelated baseline files remain
+outside that lint scope; their functional pytest checks still run unchanged, including the final
+complete suite. Reports include the exact Ruff command and scope. Baseline lint failures never
+trigger developer corrections. See [validation and milestone scheduling](docs/project-validation.md)
+for failure classes, the three-stage invoice schedule and verification details.
+
 **Phase 1 execution scope:** Python repositories with existing trusted tests and preinstalled
 sandbox dependencies. Tasks may write Python implementation, Markdown, JSON data, plain text and
 static HTML/CSS files. Existing tests, hidden files, dependency manifests, shell scripts and control
