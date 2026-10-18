@@ -189,3 +189,4 @@ frontend/dist/
 frontend/*.tsbuildinfo
 frontend/playwright-report/
 frontend/test-results/
+frontend/.vite/

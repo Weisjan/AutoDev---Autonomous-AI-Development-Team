@@ -62,7 +62,11 @@ class TestRunResult(BaseModel):
     timed_out: bool = False
     skipped: bool = False
     reason: str | None = None
-    failure_kind: Literal["code", "infrastructure"] | None = None
+    failure_kind: Literal["code", "infrastructure", "baseline"] | None = None
+
+    @property
+    def baseline_failed(self) -> bool:
+        return self.failure_kind == "baseline"
 
     @property
     def infrastructure_failed(self) -> bool:

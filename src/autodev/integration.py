@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -100,7 +101,20 @@ class IntegrationManager:
             raise GitOperationError("--repo must name the repository root")
         self.base_commit = await self.git(self.repo, "rev-parse", "HEAD")
         self.source_branch = await self.git(self.repo, "branch", "--show-current")
-        entries = (await self.git(self.repo, "ls-files", "--stage", "-z")).split("\0")
+        await self.validate_tree(self.repo)
+        if await self.git(self.repo, "status", "--porcelain", "--untracked-files=no"):
+            raise GitOperationError(
+                "commit or stash tracked changes yourself before parallel execution"
+            )
+        if self.root.resolve().is_relative_to(self.repo) is False:
+            raise GitOperationError("worktree storage must stay inside the repository")
+        self.root.mkdir(parents=True, exist_ok=False)
+        self.created = True
+        (self.root / "hooks").mkdir()
+        await self._add(self.integration)
+
+    async def validate_tree(self, cwd: Path) -> None:
+        entries = (await self.git(cwd, "ls-files", "--stage", "-z")).split("\0")
         tracked_paths = []
         for entry in filter(None, entries):
             metadata, name = entry.split("\t", 1)
@@ -114,19 +128,9 @@ class IntegrationManager:
                 for part in parts
             ):
                 raise GitOperationError("parallel baseline contains a protected credential path")
-        await self._assert_safe_attributes(self.repo, tracked_paths)
-        if await self.git(self.repo, "status", "--porcelain", "--untracked-files=no"):
-            raise GitOperationError(
-                "commit or stash tracked changes yourself before parallel execution"
-            )
-        if self.root.resolve().is_relative_to(self.repo) is False:
-            raise GitOperationError("worktree storage must stay inside the repository")
-        self.root.mkdir(parents=True, exist_ok=False)
-        self.created = True
-        (self.root / "hooks").mkdir()
-        await self._add(self.integration)
+        await self._assert_safe_attributes(cwd, tracked_paths)
 
-    async def _add(self, worktree: TaskWorktree) -> None:
+    async def _add(self, worktree: TaskWorktree, start_commit: str | None = None) -> None:
         worktree.path.parent.mkdir(parents=True, exist_ok=True)
         await self.git(
             self.repo,
@@ -135,7 +139,7 @@ class IntegrationManager:
             "-b",
             worktree.branch,
             str(worktree.path),
-            self.base_commit,
+            start_commit or self.base_commit,
         )
 
     async def _assert_safe_attributes(self, cwd: Path, paths: list[str]) -> None:
@@ -150,13 +154,20 @@ class IntegrationManager:
                     "Git filters or custom merge drivers require explicit review; execution refused"
                 )
 
-    async def create_task(self, task: DevelopmentTask) -> TaskWorktree:
+    async def create_task(
+        self, task: DevelopmentTask, start_commit: str | None = None
+    ) -> TaskWorktree:
         if task.id in self.tasks:
             raise GitOperationError("task worktree already exists")
         worktree = TaskWorktree(
             self.root / "tasks" / task.id, f"autodev/{self.run_id}/task-{task.id}"
         )
-        await self._add(worktree)
+        if start_commit is not None and (
+            len(start_commit) not in (40, 64)
+            or any(c not in "0123456789abcdef" for c in start_commit)
+        ):
+            raise GitOperationError("invalid task base commit")
+        await self._add(worktree, start_commit)
         self.tasks[task.id] = worktree
         return worktree
 
@@ -182,6 +193,15 @@ class IntegrationManager:
         return await self.git(self.integration.path, "rev-parse", "HEAD")
 
     def apply(self, task: DevelopmentTask, generated: CodeGenerationResult) -> None:
+        from autodev.project_models import ProjectTask, project_path
+
+        if isinstance(task, ProjectTask):
+            for file in generated.files:
+                project_path(file.path)
+                if len(file.content.encode("utf-8")) > 256_000:
+                    raise WorkspaceViolation("Project file exceeds its bounded output size")
+                if file.path.endswith(".json"):
+                    json.loads(file.content)
         paths = [file.path for file in generated.files]
         if len(paths) != len(set(paths)) or set(paths) != set(task.owned_files):
             raise WorkspaceViolation(

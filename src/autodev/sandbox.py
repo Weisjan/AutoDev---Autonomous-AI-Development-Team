@@ -131,9 +131,13 @@ class DryRunSandbox:
         )
 
     def run_ruff(
-        self, workspace: Path, timeout_seconds: int, max_output_chars: int
+        self,
+        workspace: Path,
+        timeout_seconds: int,
+        max_output_chars: int,
+        paths: Sequence[str] | None = None,
     ) -> TestRunResult:
-        return self.run_pytest(workspace, DEFAULT_RUFF_COMMAND, timeout_seconds, max_output_chars)
+        return self.run_pytest(workspace, ruff_command(paths), timeout_seconds, max_output_chars)
 
     def run_pytest(
         self,
@@ -176,9 +180,13 @@ class DockerSandbox:
         return self._run_command(workspace, command, timeout_seconds, max_output_chars)
 
     def run_ruff(
-        self, workspace: Path, timeout_seconds: int, max_output_chars: int
+        self,
+        workspace: Path,
+        timeout_seconds: int,
+        max_output_chars: int,
+        paths: Sequence[str] | None = None,
     ) -> TestRunResult:
-        return self._run_command(workspace, DEFAULT_RUFF_COMMAND, timeout_seconds, max_output_chars)
+        return self._run_command(workspace, ruff_command(paths), timeout_seconds, max_output_chars)
 
     def _run_command(
         self,
@@ -323,3 +331,18 @@ DEFAULT_RUFF_COMMAND = [
     "--output-format",
     "concise",
 ]
+
+
+def ruff_command(paths: Sequence[str] | None = None) -> list[str]:
+    if paths is None:
+        return list(DEFAULT_RUFF_COMMAND)
+    from autodev.project_models import project_path
+
+    if not paths or len(paths) > 80:
+        raise ValueError("Provide bounded exact Python lint paths")
+    for path in paths:
+        project_path(path)
+        if not path.endswith(".py"):
+            raise ValueError("Ruff requires exact Python implementation paths")
+    # Keep all fixed rules/options, remove '.', and terminate option parsing.
+    return [*DEFAULT_RUFF_COMMAND[:4], *DEFAULT_RUFF_COMMAND[5:], "--", *sorted(set(paths))]
