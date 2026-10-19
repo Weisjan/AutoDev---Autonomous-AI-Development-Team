@@ -4,6 +4,9 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from autodev.model_execution import ModelExecution
+from autodev.model_policy import ResolvedModelPolicy
+
 
 class GeneratedFile(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -110,3 +113,6 @@ class WorkflowResult(BaseModel):
     workspace: str
     stopped_reason: str
     model_calls_reserved: int
+    report_version: int = Field(default=1, ge=1, le=2)
+    model_policy: ResolvedModelPolicy | None = None
+    model_executions: list[ModelExecution] = Field(default_factory=list)

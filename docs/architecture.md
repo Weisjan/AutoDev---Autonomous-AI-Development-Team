@@ -1,5 +1,48 @@
 # AutoDev Architecture
 
+## v0.5 Phase 1 role model configuration
+
+`model_policy.py` defines frozen, extra-forbidden Pydantic selection, override and resolved policy
+types. Three versioned presets configure Architect/Planner, Developers and Reviewer separately.
+Resolution applies preset values, explicit operator overrides, then per-run overrides. With no
+new policy, resolution preserves legacy developer/reviewer model names, Architect inheritance and
+unspecified reasoning. A saved resolved snapshot is returned directly, without consulting presets.
+
+The dashboard posts an explicit Balanced selection by default. The API validates this separately
+from its existing allowlisted workflow-limit fields; clients cannot supply resolved policies or
+provider/execution settings. Factories resolve settings before starting model work, pass the same
+immutable snapshot to all worktree providers and retain it in reports. Role selection affects only
+`--model` and the TOML string `--config model_reasoning_effort="..."` argv entries. Subprocess shell
+usage, environment allowlist, read-only sandbox, ChatGPT login, approval policy, disabled tools and
+disabled Codex multi-agent settings are unchanged. There is no new provider or API integration.
+
+`model_execution.py` associates each provider request with its agent attempt using an asyncio-local
+ContextVar. It records a unique call ID, requested settings, lifecycle and sanitized error category.
+There is no shared mutable "last model" field across concurrent agents. Runtime model/reasoning
+observations are null and explicitly unavailable: the existing final-stdout structured JSON
+transport supplies no trustworthy observation contract. Model-written summaries and stderr banners
+are not observations. Recognized CLI rejection/fallback diagnostics cause explicit failure.
+Account entitlement is never inferred from a local catalog or preset membership.
+
+Provider configuration, model access, authentication, rate-limit, subprocess, timeout and response
+failures have separate error kinds. Developer ownership/incomplete-output failures are reported
+as implementation errors. Provider errors stop the batch, block queued calls, and never enter test
+correction loops. Already running peers finish under the existing deadlines. No automatic retry,
+model substitution, effort downgrade, budget expansion or provider fallback is introduced.
+
+New reports use `report_version: 2`, and resolved model policies use `version: 1` and
+`preset_revision: 1`. New checkpoints use envelope version 2. `CheckpointStore` verifies the raw
+canonical payload checksum before typed loading, rejects duplicate keys/non-finite numbers, then
+verifies the typed checksum. A version 1 projection removes only the newly defaulted metadata;
+it rejects v0.5 data in that envelope and reproduces the original v0.4 digest. Legacy configuration
+fingerprints retain the original model fields. Version 2 fingerprints include the resolved policy,
+so saved choices survive changed preset/operator defaults. Resume compares live and checkpoint
+policies and preserves all prior Git, cleanliness, budget and elapsed-time checks. Older files are
+not rewritten, and no force-resume path is added.
+
+See [configuration, compatibility and verification](v0.5-role-models.md) for exact presets, operator
+precedence, API shape, test coverage and remaining runtime limitations.
+
 ## v0.4 Phase 1 project orchestration
 
 `ProjectArchitect` uses `CodexCLIProvider.architect` and the existing structured JSON subprocess

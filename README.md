@@ -1,8 +1,47 @@
-# AutoDev v0.4 — Phase 1
+# AutoDev v0.5 — Phase 1
 
 AutoDev is a small Python application where AI agents generate Python code, run a fixed pytest command in a sandbox backend, use failures for up to three repair attempts, and ask a separate reviewer agent for structured feedback.
 
 The default model provider is **Codex CLI**, using your existing ChatGPT login without an OpenAI API key. The existing `openai_api` backend is optional for sequential runs. AutoDev never switches to it after a Codex failure. Sequential development remains the default; `--parallel` enables up to two concurrent Codex developers.
+
+## Role-based models and reasoning (v0.5 Phase 1)
+
+New dashboard runs explicitly select **Balanced**. In **New Task**, choose a preset and optionally
+customize Architect, Developers and Reviewer separately. All parallel workers use the resolved
+Developers settings. The independent-task Planner uses the Architect settings.
+
+| Preset | Architect | Developers | Reviewer |
+| --- | --- | --- | --- |
+| Fast | `gpt-6.1-sol` / `medium` | `gpt-6.1-sol` / `low` | `gpt-6.1-sol` / `medium` |
+| Balanced | `gpt-6-astra` / `high` | `gpt-6.1-sol` / `high` | `gpt-6-astra` / `high` |
+| Maximum Quality | `gpt-6-astra` / `xhigh` | `gpt-6.1-sol` / `xhigh` | `gpt-6-astra` / `xhigh` |
+
+`xhigh` means extra-high reasoning. These are **requested settings**, not proof of account access
+or actual runtime model identity. AutoDev does not inspect credentials or probe models before a
+run. Codex handles your existing ChatGPT login. The dashboard and JSON report keep requested
+settings separate from runtime observations, which are **unavailable** with the current transport.
+No model self-report is treated as verification. Unsupported/inaccessible choices stop with an
+explicit error; AutoDev never substitutes another model, reasoning level or provider.
+
+Presets do not increase timeouts, concurrency, correction rounds or model-call budgets. Maximum
+Quality can therefore time out under the same limits. Codex tools and internal sub-agents remain
+disabled; Git worktree ownership, protected tests and Docker restrictions remain in force.
+
+Existing CLI/API calls without a new policy retain legacy defaults, including Architect inheritance
+from the Developer model and no explicit reasoning argument. New policies are opt-in outside the
+dashboard. For example, **when you choose to make a real Codex call**, in Windows PowerShell:
+
+```powershell
+# Uses ChatGPT sign-in, no API key. This command consumes Codex usage.
+.\.venv\Scripts\python.exe -m autodev run --example calculator --sandbox-backend docker --model-preset balanced
+# Optional override for one role; all other roles keep the preset settings.
+.\.venv\Scripts\python.exe -m autodev run --example calculator --sandbox-backend docker --model-preset fast --reviewer-reasoning-effort high
+```
+
+Environment equivalents are documented in [.env.example](.env.example). Preset settings resolve
+once into a versioned immutable run snapshot. Project resume retains that snapshot and all prior
+limits; existing v0.4 checkpoint checksums remain supported. See [role model configuration](docs/v0.5-role-models.md)
+for precedence, API examples, error categories, limitations and the bounded real verification plan.
 
 ## Multi-stage projects (v0.4 Phase 1)
 

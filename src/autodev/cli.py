@@ -5,7 +5,10 @@ import asyncio
 import json
 from pathlib import Path
 
+from pydantic import ValidationError
+
 from autodev.config import AutoDevConfig, load_config_from_env
+from autodev.model_policy import ModelPolicy
 from autodev.orchestrator import build_orchestrator
 from autodev.parallel import build_parallel_orchestrator
 from autodev.planning import TaskPlan
@@ -37,13 +40,23 @@ def main() -> None:
     run_parser.add_argument("--max-corrections", type=int)
     run_parser.add_argument("--max-model-calls", type=int)
     run_parser.add_argument("--workflow-timeout", type=int)
+    run_parser.add_argument("--model-preset", choices=["fast", "balanced", "maximum_quality"])
+    for role in ("architect", "developer", "reviewer"):
+        run_parser.add_argument(f"--{role}-model", choices=["gpt-6-astra", "gpt-6.1-sol"])
+        run_parser.add_argument(
+            f"--{role}-reasoning-effort", choices=["low", "medium", "high", "xhigh"]
+        )
 
     args = parser.parse_args()
     if args.command == "run":
         try:
             asyncio.run(_run(args))
         except ProviderError as exc:
-            raise SystemExit(str(exc)) from None
+            raise SystemExit(f"{exc.kind}: {exc}") from None
+        except ValidationError:
+            raise SystemExit(
+                "Invalid AutoDev configuration; check model policy and workflow limits"
+            ) from None
 
 
 async def _run(args: argparse.Namespace) -> None:
@@ -52,6 +65,27 @@ async def _run(args: argparse.Namespace) -> None:
     seed_tests_dir = _resolve_seed_tests(args)
 
     updates = {}
+    role_overrides = {}
+    for role in ("architect", "developer", "reviewer"):
+        values = {
+            key: value
+            for key, value in (
+                ("model", getattr(args, f"{role}_model", None)),
+                ("reasoning_effort", getattr(args, f"{role}_reasoning_effort", None)),
+            )
+            if value is not None
+        }
+        if values:
+            role_overrides[role] = values
+    preset = getattr(args, "model_preset", None)
+    if preset or role_overrides:
+        base = (
+            config.model_policy if isinstance(config.model_policy, ModelPolicy) else ModelPolicy()
+        )
+        overrides = base.overrides.model_dump(exclude_none=True)
+        for role, values in role_overrides.items():
+            overrides[role] = (overrides.get(role) or {}) | values
+        updates["model_policy"] = ModelPolicy(preset=preset or base.preset, overrides=overrides)
     if getattr(args, "provider", None):
         updates["provider"] = args.provider
     if args.workspace:

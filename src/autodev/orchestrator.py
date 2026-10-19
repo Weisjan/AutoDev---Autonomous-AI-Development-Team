@@ -8,6 +8,8 @@ from autodev.agents import (
 )
 from autodev.budget import ApiBudgetTracker, BudgetExceededError
 from autodev.config import AutoDevConfig
+from autodev.model_execution import capture_execution
+from autodev.model_policy import resolve_config
 from autodev.providers import build_provider
 from autodev.runner import DEFAULT_PYTEST_COMMAND, TestRunner
 from autodev.sandbox import DockerSandbox, DryRunSandbox, SandboxBackend
@@ -31,6 +33,7 @@ class Orchestrator:
         self._budget = budget
 
     async def run_task(self, task: str, seed_tests_dir: Path | None = None) -> WorkflowResult:
+        policy, executions = resolve_config(self._config), []
         workspace = Workspace(self._config.workspace_dir)
         if self._config.reset_workspace:
             workspace.clear()
@@ -45,7 +48,8 @@ class Orchestrator:
 
         for iteration in range(1, self._config.agents.max_iterations + 1):
             try:
-                generated = await self._developer.generate(task, previous_files, failure_output)
+                with capture_execution(executions.append):
+                    generated = await self._developer.generate(task, previous_files, failure_output)
             except BudgetExceededError as exc:
                 stopped_reason = str(exc)
                 break
@@ -92,7 +96,7 @@ class Orchestrator:
         review = (
             None
             if final_test_result and final_test_result.infrastructure_failed
-            else await self._review_final(task, workspace, final_test_result)
+            else await self._review_final(task, workspace, final_test_result, executions)
         )
         tests_passed = final_test_result.passed if final_test_result else False
         succeeded = bool(tests_passed and review and review.approved)
@@ -109,6 +113,9 @@ class Orchestrator:
             workspace=str(workspace.root),
             stopped_reason=stopped_reason,
             model_calls_reserved=self._budget.calls_reserved,
+            report_version=2,
+            model_policy=policy,
+            model_executions=executions,
         )
 
     async def _review_final(
@@ -116,9 +123,13 @@ class Orchestrator:
         task: str,
         workspace: Workspace,
         final_test_result: TestRunResult | None,
+        executions: list | None = None,
     ) -> ReviewResult | None:
         try:
-            return await self._reviewer.review(task, workspace.snapshot_files(), final_test_result)
+            with capture_execution((executions if executions is not None else []).append):
+                return await self._reviewer.review(
+                    task, workspace.snapshot_files(), final_test_result
+                )
         except BudgetExceededError:
             return None
 

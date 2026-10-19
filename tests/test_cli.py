@@ -8,6 +8,7 @@ from pydantic import ValidationError
 
 from autodev.cli import _run, main
 from autodev.config import AutoDevConfig
+from autodev.model_policy import resolve_config
 from autodev.parallel_schemas import ParallelWorkflowReport
 from autodev.providers import ProviderAuthenticationError
 from autodev.schemas import WorkflowResult
@@ -126,3 +127,57 @@ def test_parallel_settings_require_parallel_flag(monkeypatch):
     )
     with pytest.raises(SystemExit, match="require --parallel"):
         asyncio.run(_run(args))
+
+
+def test_cli_role_policy_overrides_preserve_workflow_limits(monkeypatch):
+    original = AutoDevConfig()
+    monkeypatch.setattr("autodev.cli.load_config_from_env", lambda: original)
+    result = WorkflowResult(
+        task="task",
+        succeeded=False,
+        attempts=[],
+        workspace="workspace",
+        stopped_reason="offline fixture",
+        model_calls_reserved=0,
+    )
+    builder = Mock(return_value=Mock(run_task=AsyncMock(return_value=result)))
+    monkeypatch.setattr("autodev.cli.build_orchestrator", builder)
+    args = argparse.Namespace(
+        task="Build modules",
+        task_file=None,
+        example=None,
+        workspace=None,
+        sandbox_backend=None,
+        max_iterations=None,
+        model_preset="maximum_quality",
+        developer_reasoning_effort="high",
+    )
+    asyncio.run(_run(args))
+    config = builder.call_args.args[0]
+    policy = resolve_config(config)
+    assert policy.architect.reasoning_effort == policy.reviewer.reasoning_effort == "xhigh"
+    assert policy.developer.reasoning_effort == "high"
+    assert config.parallel == original.parallel and config.codex_cli == original.codex_cli
+
+
+def test_cli_parses_role_model_and_effort_flags_without_model_calls(monkeypatch):
+    run = AsyncMock()
+    monkeypatch.setattr("autodev.cli._run", run)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "autodev",
+            "run",
+            "--task",
+            "Build modules",
+            "--model-preset",
+            "balanced",
+            "--architect-model",
+            "gpt-6-astra",
+            "--architect-reasoning-effort",
+            "xhigh",
+        ],
+    )
+    main()
+    args = run.call_args.args[0]
+    assert args.model_preset == "balanced" and args.architect_reasoning_effort == "xhigh"

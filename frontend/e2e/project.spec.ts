@@ -7,6 +7,13 @@ test("project specification, real boundary pause and verified resume", async ({
   page.on("pageerror", (e) => errors.push(e.message));
   await page.goto("/");
   await page.getByRole("button", { name: "New Task", exact: true }).click();
+  await expect(page.getByLabel("Model preset")).toHaveValue("balanced");
+  await page.getByLabel("Model preset").selectOption("maximum_quality");
+  await page.getByText("Customize roles", { exact: true }).click();
+  await page
+    .getByLabel("Developers reasoning", { exact: true })
+    .selectOption("high");
+  await expect(page.getByLabel("Model call limit")).toHaveValue("24");
   await page.getByLabel("Workflow type").selectOption("project");
   const option = page.getByRole("option", { name: /offline-project/ });
   await page
@@ -50,6 +57,13 @@ test("project specification, real boundary pause and verified resume", async ({
     .getByRole("link", { name: /JSON report/ })
     .getAttribute("href");
   const report = await (await page.request.get(url!)).json();
+  expect(report.model_policy.preset).toBe("maximum_quality");
+  expect(report.model_policy.architect.model).toBe("gpt-6-astra");
+  expect(report.model_policy.architect.reasoning_effort).toBe("xhigh");
+  expect(report.model_policy.developer.reasoning_effort).toBe("high");
+  await expect(
+    page.getByText("Unavailable · not reported reliably by Codex exec").first(),
+  ).toBeVisible();
   expect(
     report.tasks.map((t: { attempts: unknown[] }) => t.attempts.length),
   ).toEqual([1, 1, 1, 1]);

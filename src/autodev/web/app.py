@@ -12,6 +12,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 
 from autodev.config import AutoDevConfig
+from autodev.model_policy import policy_options
 from autodev.web.models import ResumeRun, StartRun
 from autodev.web.service import RunService
 
@@ -84,7 +85,10 @@ def create_app(repositories=None, config=None, factory=None, port=8000, project_
     @app.exception_handler(RequestValidationError)
     async def invalid_input(request, error):
         return JSONResponse(
-            {"detail": [{"loc": item["loc"], "msg": item["msg"]} for item in error.errors()]},
+            {
+                "error_kind": "configuration_invalid",
+                "detail": [{"loc": item["loc"], "msg": item["msg"]} for item in error.errors()],
+            },
             status_code=422,
         )
 
@@ -95,7 +99,7 @@ def create_app(repositories=None, config=None, factory=None, port=8000, project_
 
     @app.get("/api/health")
     async def health():
-        return {"status": "ok", "version": "0.4.0"}
+        return {"status": "ok", "version": "0.5.0"}
 
     @app.get("/api/session")
     async def bootstrap():
@@ -119,6 +123,7 @@ def create_app(repositories=None, config=None, factory=None, port=8000, project_
             "docker_image": service.config.sandbox.docker_image,
             "merging": "No merge or push endpoint; integration branches are retained",
             "cancellation": "Waits for bounded sandbox cleanup before stopping",
+            "model_options": policy_options(service.config.model_overrides),
         }
 
     @app.get("/api/runs")
