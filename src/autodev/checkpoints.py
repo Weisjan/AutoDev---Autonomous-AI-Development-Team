@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict
 
 from autodev.config import AutoDevConfig
 from autodev.integration import GitOperationError, IntegrationManager, TaskWorktree
+from autodev.model_policy import resolve_config
 from autodev.project_models import ProjectReport
 from autodev.web.security import contained
 
@@ -27,26 +28,58 @@ def digest(value) -> str:
     ).hexdigest()
 
 
-def configuration_digest(config: AutoDevConfig) -> str:
-    return digest(config.model_dump(mode="json"))
+def configuration_digest(config: AutoDevConfig, version: int = 2) -> str:
+    data = config.model_dump(mode="json")
+    data.pop("model_overrides")
+    if version == 1:
+        if config.model_policy is not None:
+            raise RecoveryRequired("Legacy checkpoints require the unchanged legacy model settings")
+        data.pop("model_policy")
+    else:
+        data["model_policy"] = resolve_config(config).model_dump(mode="json")
+        # Resolved settings already contain these values; current operator defaults
+        # must not replace a saved run policy during resume.
+        data["agents"].pop("developer_model")
+        data["agents"].pop("reviewer_model")
+    return digest(data)
+
+
+def checkpoint_payload(checkpoint) -> dict:
+    data = checkpoint.model_dump(mode="json", exclude={"checksum"})
+    if checkpoint.version == 1:
+        report = data["report"]
+        if (
+            report["report_version"] != 1
+            or report["model_policy"] is not None
+            or report["error_kind"] is not None
+        ):
+            raise RecoveryRequired("Legacy checkpoint cannot contain v0.5 model policy metadata")
+        for key in ("report_version", "model_policy", "error_kind"):
+            report.pop(key)
+        attempts = [report.get("planner_execution"), report.get("reviewer_execution")]
+        attempts += [a for task in report["tasks"] for a in task["attempts"]]
+        for attempt in filter(None, attempts):
+            if attempt["execution"] is not None or attempt["error_kind"] is not None:
+                raise RecoveryRequired("Legacy checkpoint cannot contain v0.5 execution metadata")
+            attempt.pop("execution")
+            attempt.pop("error_kind")
+    return data
 
 
 class Checkpoint(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    version: int = 1
+    version: int = 2
     report: ProjectReport
     task_heads: dict[str, str]
     checksum: str = ""
 
     def seal(self):
         self.report = ProjectReport.model_validate_json(self.report.model_dump_json())
-        self.checksum = digest(self.model_dump(mode="json", exclude={"checksum"}))
+        self.checksum = digest(checkpoint_payload(self))
         return self
 
     def verify(self):
-        if self.version != 1 or self.checksum != digest(
-            self.model_dump(mode="json", exclude={"checksum"})
-        ):
+        if self.version not in {1, 2} or self.checksum != digest(checkpoint_payload(self)):
             raise RecoveryRequired(
                 "Checkpoint checksum/version mismatch; explicit manual review required"
             )
@@ -128,7 +161,28 @@ class CheckpointStore:
         )
         if path.stat().st_size > 2_000_000:
             raise RecoveryRequired("Oversized checkpoint")
-        checkpoint = Checkpoint.model_validate_json(path.read_bytes())
+
+        def unique_keys(pairs):
+            result = {}
+            for key, value in pairs:
+                if key in result:
+                    raise RecoveryRequired("Duplicate checkpoint JSON key")
+                result[key] = value
+            return result
+
+        def nonfinite(value):
+            raise RecoveryRequired("Non-finite checkpoint JSON number")
+
+        raw = json.loads(path.read_bytes(), object_pairs_hook=unique_keys, parse_constant=nonfinite)
+        # Validate the original payload before Pydantic supplies new default fields.
+        if (
+            not isinstance(raw, dict)
+            or raw.get("version") not in {1, 2}
+            or raw.get("checksum")
+            != digest({key: value for key, value in raw.items() if key != "checksum"})
+        ):
+            raise RecoveryRequired("Checkpoint checksum/version mismatch; manual review required")
+        checkpoint = Checkpoint.model_validate(raw)
         checkpoint.verify()
         return checkpoint
 
@@ -148,7 +202,9 @@ class CheckpointStore:
             if (
                 live.checkpoint_digest != checkpoint.checksum
                 or report.run_id != self.integration.run_id
-                or report.configuration_digest != configuration_digest(config)
+                or report.configuration_digest
+                != configuration_digest(config, report.report_version)
+                or live.model_policy != report.model_policy
                 or live.integration_commit != report.integration_commit
                 or live.validated_tasks != report.validated_tasks
             ):

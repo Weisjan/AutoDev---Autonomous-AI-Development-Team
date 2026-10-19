@@ -13,6 +13,8 @@ export type Attempt = {
   duration_seconds: number;
   commit?: string;
   error?: string;
+  error_kind?: string;
+  execution?: ModelExecution;
 };
 export type Check = {
   passed: boolean;
@@ -38,6 +40,9 @@ export type DevTask = {
   attempts: Attempt[];
 };
 export type Report = {
+  report_version?: number;
+  model_policy?: ResolvedModelPolicy;
+  error_kind?: string;
   mode?: "project";
   specification?: ProjectSpecification;
   milestones?: {
@@ -87,6 +92,7 @@ export type Report = {
   plan?: { summary: string };
 };
 export type Run = {
+  model_policy?: ResolvedModelPolicy;
   id: string;
   run_id: string;
   repository_id: string;
@@ -100,6 +106,7 @@ export type Run = {
   events?: { stage: string; at: string; task_id?: string; error?: string }[];
 };
 export type Start = {
+  model_policy?: ModelPolicy | null;
   mode?: "task" | "project";
   repository_id: string;
   instructions: string;
@@ -111,6 +118,7 @@ export type Start = {
   example: boolean;
 };
 export type Settings = {
+  model_options?: ModelOptions;
   provider: string;
   authentication: string;
   sandbox: string;
@@ -120,6 +128,45 @@ export type Settings = {
   docker_image: string;
   merging: string;
   cancellation: string;
+};
+
+export type ModelRole = "architect" | "developer" | "reviewer";
+export type ModelPreset = "fast" | "balanced" | "maximum_quality";
+export type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
+export type RoleSettings = {
+  model: string | null;
+  reasoning_effort: ReasoningEffort | null;
+  model_source: string;
+  effort_source: string;
+};
+export type ModelPolicy = {
+  preset: ModelPreset;
+  overrides?: Partial<
+    Record<ModelRole, { model?: string; reasoning_effort?: ReasoningEffort }>
+  >;
+};
+export type ResolvedModelPolicy = Record<ModelRole, RoleSettings> & {
+  kind: "resolved";
+  version: number;
+  preset: ModelPreset | null;
+  preset_revision: number;
+};
+export type ModelExecution = {
+  role: ModelRole;
+  requested: RoleSettings;
+  observed_model: null;
+  observed_reasoning_effort: null;
+  observation_status: "unavailable";
+  status: string;
+  error_kind?: string;
+};
+export type ModelOptions = {
+  default_dashboard_preset: ModelPreset;
+  presets: Record<ModelPreset, ResolvedModelPolicy>;
+  models: string[];
+  reasoning_efforts: ReasoningEffort[];
+  availability: string;
+  runtime_observations: string;
 };
 
 export type ProjectSpecification = {

@@ -1196,3 +1196,42 @@ a:focus-visible {
     transition: none !important;
   }
 }
+
+.model-controls {
+  border: 1px solid var(--border, #303744);
+  border-radius: 12px;
+  padding: 18px;
+  margin: 18px 0;
+  min-width: 0;
+}
+.model-controls legend {
+  padding: 0 8px;
+  font-weight: 600;
+}
+.model-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 12px 0;
+  font-size: 12px;
+}
+.model-table th,
+.model-table td {
+  text-align: left;
+  padding: 10px 6px;
+  border-bottom: 1px solid #303744;
+  overflow-wrap: anywhere;
+}
+.model-details {
+  margin: 14px 0;
+  font-size: 11px;
+}
+.model-details div {
+  margin: 8px 0;
+}
+.model-details dt {
+  color: #99a7b9;
+}
+.model-details dd {
+  margin: 3px 0 0;
+  overflow-wrap: anywhere;
+}

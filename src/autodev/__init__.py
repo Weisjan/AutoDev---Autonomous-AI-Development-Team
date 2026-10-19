@@ -1,4 +1,4 @@
-"""AutoDev v0.2 package, with sequential and opt-in parallel workflows."""
+"""AutoDev: sequential, parallel and multi-stage workflows with role model policies."""
 
 from autodev.config import AutoDevConfig
 from autodev.orchestrator import Orchestrator

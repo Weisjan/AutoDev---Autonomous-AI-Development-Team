@@ -18,6 +18,7 @@ from autodev.integration import (
     IntegrationManager,
     TaskWorktree,
 )
+from autodev.model_execution import capture_attempt
 from autodev.parallel import ParallelOrchestrator, build_parallel_orchestrator, timestamp
 from autodev.parallel_schemas import AgentAttempt
 from autodev.planning import responsible_tasks
@@ -96,6 +97,8 @@ class ProjectOrchestrator(ParallelOrchestrator):
         self.pause_requested = False
         start = monotonic()
         report = ProjectReport(
+            report_version=2,
+            model_policy=self.model_policy,
             request=request,
             run_id=self.integration.run_id,
             started_at=timestamp(),
@@ -153,6 +156,7 @@ class ProjectOrchestrator(ParallelOrchestrator):
         except (ProviderError, BudgetExceededError, GitOperationError, WorkspaceViolation) as error:
             report.integration_status, report.checkpoint_safe = "failed", False
             report.stopped_reason = str(error)
+            report.error_kind = getattr(error, "kind", "workflow")
         except Exception:
             report.integration_status, report.checkpoint_safe = "failed", False
             report.stopped_reason = (
@@ -209,13 +213,15 @@ class ProjectOrchestrator(ParallelOrchestrator):
             planning_start = monotonic()
             self.notify("architecting")
             try:
-                report.specification = await asyncio.wait_for(
-                    self.architect.design(report.request, await self.snapshot()),
-                    self.config.parallel.agent_timeout_seconds,
-                )
+                with capture_attempt(report.planner_execution):
+                    report.specification = await asyncio.wait_for(
+                        self.architect.design(report.request, await self.snapshot()),
+                        self.config.parallel.agent_timeout_seconds,
+                    )
             except ProviderError as error:
                 # Provider diagnostics omit raw output and validation inputs.
                 report.planner_execution.error = str(error)
+                report.planner_execution.error_kind = error.kind
                 raise
             except BaseException:
                 report.planner_execution.error = "Architecture failed validation or was interrupted"
@@ -311,16 +317,18 @@ class ProjectOrchestrator(ParallelOrchestrator):
         review_start = monotonic()
         self.notify("reviewing")
         try:
-            report.review = await asyncio.wait_for(
-                self.reviewer.review(
-                    report.request + "\n" + report.specification.model_dump_json(),
-                    await self.snapshot(),
-                    final.checks.pytest,
-                ),
-                self.config.parallel.agent_timeout_seconds,
-            )
-        except BaseException:
+            with capture_attempt(report.reviewer_execution):
+                report.review = await asyncio.wait_for(
+                    self.reviewer.review(
+                        report.request + "\n" + report.specification.model_dump_json(),
+                        await self.snapshot(),
+                        final.checks.pytest,
+                    ),
+                    self.config.parallel.agent_timeout_seconds,
+                )
+        except BaseException as error:
             report.reviewer_execution.error = "Review failed or was interrupted"
+            report.reviewer_execution.error_kind = getattr(error, "kind", "interrupted")
             raise
         finally:
             report.reviewer_execution.finished_at = timestamp()
@@ -349,6 +357,10 @@ class ProjectOrchestrator(ParallelOrchestrator):
                 report.integration_status, report.stopped_reason = (
                     "agent_failed",
                     "A project developer failed",
+                )
+                report.error_kind = next(
+                    (a.error_kind for t in pending for a in t.attempts if a.error_kind),
+                    "agent_failed",
                 )
                 return False
             current = ProjectRound(

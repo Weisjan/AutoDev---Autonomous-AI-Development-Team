@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from autodev.model_execution import ModelExecution
+from autodev.model_policy import ResolvedModelPolicy
 from autodev.planning import DevelopmentTask, TaskPlan
 from autodev.schemas import ReviewResult, TestRunResult
 
@@ -53,6 +55,8 @@ class AgentAttempt(BaseModel):
     duration_seconds: float = 0
     commit: str | None = None
     error: str | None = None
+    error_kind: str | None = None
+    execution: ModelExecution | None = None
 
 
 class ParallelTaskResult(BaseModel):
@@ -97,3 +101,6 @@ class ParallelWorkflowReport(BaseModel):
     conflicts: list[str] = Field(default_factory=list)
     model_calls_reserved: int = 0
     report_path: str | None = None
+    report_version: int = Field(default=1, ge=1, le=2)
+    model_policy: ResolvedModelPolicy | None = None
+    error_kind: str | None = None

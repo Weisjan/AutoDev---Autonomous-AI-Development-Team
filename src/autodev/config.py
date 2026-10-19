@@ -6,7 +6,9 @@ from pathlib import Path
 from typing import Literal
 
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field, PositiveInt, field_validator
+from pydantic import BaseModel, Field, PositiveInt, field_validator, model_validator
+
+from autodev.model_policy import ModelPolicy, ResolvedModelPolicy, RoleOverrides
 
 
 class AgentConfig(BaseModel):
@@ -58,6 +60,19 @@ class AutoDevConfig(BaseModel):
     sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
     codex_cli: CodexCLIConfig = Field(default_factory=CodexCLIConfig)
     parallel: ParallelConfig = Field(default_factory=ParallelConfig)
+    model_policy: ModelPolicy | ResolvedModelPolicy | None = None
+    model_overrides: RoleOverrides = Field(default_factory=RoleOverrides)
+
+    @model_validator(mode="after")
+    def codex_model_policy(self):
+        if self.model_policy is not None and self.provider != "codex_cli":
+            raise ValueError("Role model policies require codex_cli with ChatGPT authentication")
+        if self.model_policy is None and any(
+            getattr(self.model_overrides, role) is not None
+            for role in ("architect", "developer", "reviewer")
+        ):
+            raise ValueError("Role overrides require an explicit model policy")
+        return self
 
 
 def _decimal_env(name: str, default: Decimal) -> Decimal:
@@ -76,6 +91,25 @@ def _int_env(name: str, default: int) -> int:
 
 def load_config_from_env() -> AutoDevConfig:
     load_dotenv()
+    overrides = {}
+    for role in ("architect", "developer", "reviewer"):
+        values = {
+            name: value
+            for name, value in (
+                ("model", os.getenv(f"AUTODEV_{role.upper()}_MODEL")),
+                ("reasoning_effort", os.getenv(f"AUTODEV_{role.upper()}_REASONING_EFFORT")),
+            )
+            if value
+        }
+        if values:
+            overrides[role] = values
+    preset = os.getenv("AUTODEV_MODEL_PRESET") or None
+    # Existing model-only variables keep their legacy semantics. New controls opt in.
+    explicit = (
+        preset
+        or "architect" in overrides
+        or any("reasoning_effort" in values for values in overrides.values())
+    )
     agents = AgentConfig(
         developer_model=os.getenv("AUTODEV_DEVELOPER_MODEL") or None,
         reviewer_model=os.getenv("AUTODEV_REVIEWER_MODEL") or None,
@@ -94,6 +128,8 @@ def load_config_from_env() -> AutoDevConfig:
         provider=os.getenv("AUTODEV_PROVIDER", "codex_cli"),
         workspace_dir=Path(os.getenv("AUTODEV_WORKSPACE", ".autodev/workspace")),
         agents=agents,
+        model_policy=ModelPolicy(preset=preset or "balanced") if explicit else None,
+        model_overrides=RoleOverrides.model_validate(overrides if explicit else {}),
         sandbox=sandbox,
         codex_cli=CodexCLIConfig(
             executable=os.getenv("AUTODEV_CODEX_EXECUTABLE", "codex"),

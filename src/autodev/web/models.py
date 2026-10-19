@@ -4,6 +4,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from autodev.model_policy import ModelPolicy
+
 
 class StartRun(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -16,6 +18,7 @@ class StartRun(BaseModel):
     workflow_timeout_seconds: int = Field(default=1800, ge=30, le=3600)
     example: bool = False
     mode: Literal["task", "project"] = "task"
+    model_policy: ModelPolicy | None = None
 
     @model_validator(mode="after")
     def project_options(self):

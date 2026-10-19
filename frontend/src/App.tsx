@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, session } from "./api";
+import ModelControls, { presetLabel } from "./ModelControls";
+import ModelDetails from "./ModelDetails";
 import ProjectPanel from "./ProjectPanel";
 import type {
   Attempt,
@@ -9,6 +11,8 @@ import type {
   Run,
   Settings,
   Start,
+  ModelOptions,
+  RoleSettings,
 } from "./types";
 
 const active = (run?: Run) =>
@@ -31,11 +35,15 @@ function Agent({
   status,
   attempt,
   children,
+  requested,
+  modelAgent,
 }: {
   name: string;
   status: string;
   attempt?: Attempt;
   children?: React.ReactNode;
+  requested?: RoleSettings;
+  modelAgent?: boolean;
 }) {
   return (
     <article className="agent">
@@ -45,6 +53,9 @@ function Agent({
       </div>
       <h3>{name}</h3>
       {children}
+      {modelAgent && (
+        <ModelDetails requested={requested} execution={attempt?.execution} />
+      )}
       <dl className="agent-times">
         <div>
           <dt>Started</dt>
@@ -67,10 +78,12 @@ function NewTask({
   projects,
   busy,
   onStart,
+  modelOptions,
 }: {
   projects: Project[];
   busy: boolean;
   onStart: (request: Start) => Promise<void>;
+  modelOptions?: ModelOptions;
 }) {
   const [form, setForm] = useState<Start>({
     repository_id: projects[0]?.id || "",
@@ -82,6 +95,7 @@ function NewTask({
     workflow_timeout_seconds: 1800,
     example: false,
     mode: "task",
+    model_policy: { preset: "balanced" },
   });
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
@@ -178,6 +192,11 @@ function NewTask({
           />
           Use the bundled two-module demonstration and trusted acceptance tests
         </label>
+        <ModelControls
+          value={form.model_policy || { preset: "balanced" }}
+          options={modelOptions}
+          changed={(value) => set("model_policy", value)}
+        />
         <div className="form-grid">
           {(
             [
@@ -298,6 +317,7 @@ function RunDetail({
           ? "failed"
           : "completed";
   const checks = report?.rounds.at(-1)?.checks;
+  const modelPolicy = report?.model_policy || run.model_policy;
   const fixture = checks?.pytest.command[0] === "mock-pytest";
   const integrationStart = run.events?.find((e) =>
     ["integrating", "validating"].includes(e.stage),
@@ -329,6 +349,18 @@ function RunDetail({
           <div className="eyebrow">RUN {run.run_id}</div>
           <h2>{words(run.stage)}</h2>
           <p className="run-instructions">{run.instructions}</p>
+          <p className="muted">
+            Requested model policy:{" "}
+            {modelPolicy?.preset
+              ? presetLabel(modelPolicy.preset)
+              : "Legacy defaults / not recorded"}
+            {modelPolicy &&
+              ` · policy v${modelPolicy.version}, preset revision ${modelPolicy.preset_revision}`}
+            . Account access unverified; runtime observations unavailable.
+          </p>
+          {report?.error_kind && (
+            <p className="error">Failure class: {words(report.error_kind)}</p>
+          )}
         </div>
         <div className="run-actions">
           <Badge value={run.status} />
@@ -430,6 +462,8 @@ function RunDetail({
                 : agentStatus(report?.planner_execution)
             }
             attempt={report?.planner_execution}
+            modelAgent
+            requested={modelPolicy?.architect}
           >
             <p>
               {report?.specification?.summary ||
@@ -448,6 +482,8 @@ function RunDetail({
               }
               status={task.status}
               attempt={task.attempts.at(-1)}
+              modelAgent
+              requested={modelPolicy?.developer}
             >
               <strong className="task-id">{task.task.id}</strong>
               <p>{task.task.description}</p>
@@ -473,7 +509,13 @@ function RunDetail({
           ))}
           {!tasks.length &&
             [1, 2].map((n) => (
-              <Agent key={n} name={`Developer ${n}`} status="waiting">
+              <Agent
+                key={n}
+                name={`Developer ${n}`}
+                status="waiting"
+                modelAgent
+                requested={modelPolicy?.developer}
+              >
                 <p>Waiting for a scoped task assignment.</p>
               </Agent>
             ))}
@@ -498,6 +540,8 @@ function RunDetail({
             name="Reviewer"
             status={agentStatus(report?.reviewer_execution)}
             attempt={report?.reviewer_execution}
+            modelAgent
+            requested={modelPolicy?.reviewer}
           >
             <p>
               {report?.review?.summary ||
@@ -785,7 +829,7 @@ export default function App() {
             Authentication is checked when a run starts.
           </p>
           <div className="version">
-            AUTODEV v0.4 <span>LOCAL ONLY</span>
+            AUTODEV v0.5 <span>LOCAL ONLY</span>
           </div>
         </div>
       </aside>
@@ -835,6 +879,7 @@ export default function App() {
               <NewTask
                 projects={projects}
                 busy={!!running}
+                modelOptions={settings?.model_options}
                 onStart={async (request) => {
                   const run = await api<Run>("/runs", request);
                   selectedId.current = run.id;
@@ -957,15 +1002,36 @@ export default function App() {
               </div>
               {settings ? (
                 <dl className="settings">
-                  {Object.entries(settings).map(([key, value]) => (
-                    <div key={key}>
-                      <dt>{words(key)}</dt>
-                      <dd>{String(value)}</dd>
-                    </div>
-                  ))}
+                  {Object.entries(settings)
+                    .filter(([key]) => key !== "model_options")
+                    .map(([key, value]) => (
+                      <div key={key}>
+                        <dt>{words(key)}</dt>
+                        <dd>{String(value)}</dd>
+                      </div>
+                    ))}
                 </dl>
               ) : (
                 <p>Loading settings…</p>
+              )}
+              {settings?.model_options && (
+                <div className="notice">
+                  <strong>
+                    Model presets: Fast · Balanced · Maximum Quality
+                  </strong>
+                  <p>
+                    Balanced is the default for new dashboard runs. Customize
+                    roles in New Task.
+                  </p>
+                  <p>
+                    {settings.model_options.availability}.{" "}
+                    {settings.model_options.runtime_observations}.
+                  </p>
+                  <p>
+                    These presets do not enable Codex Fast/Ultrafast mode or
+                    change safety limits.
+                  </p>
+                </div>
               )}
               <h3>Registered repositories</h3>
               {projects.map((p) => (
@@ -984,7 +1050,7 @@ export default function App() {
           )}
           <footer>
             AutoDev <span>Local workspace. No automatic push or merge.</span>
-            <span>v0.4.0</span>
+            <span>v0.5.0</span>
           </footer>
         </div>
       </main>

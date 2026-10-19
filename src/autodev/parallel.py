@@ -14,6 +14,8 @@ from autodev.agents import DeveloperAgent, DeveloperModelClient, ReviewerAgent
 from autodev.budget import ApiBudgetTracker, BudgetExceededError
 from autodev.config import AutoDevConfig
 from autodev.integration import GitOperationError, IntegrationConflict, IntegrationManager
+from autodev.model_execution import capture_attempt
+from autodev.model_policy import resolve_config
 from autodev.parallel_schemas import (
     AgentAttempt,
     IntegratedChecks,
@@ -151,6 +153,7 @@ class ParallelOrchestrator:
     ) -> None:
         self.config = config
         self.planner = planner
+        self.model_policy = resolve_config(config)
         self.developer_factory = developer_factory
         self.reviewer = reviewer
         self.integration = integration
@@ -186,6 +189,8 @@ class ParallelOrchestrator:
     ) -> ParallelWorkflowReport:
         start = monotonic()
         report = ParallelWorkflowReport(
+            report_version=2,
+            model_policy=self.model_policy,
             request=request,
             run_id=self.integration.run_id,
             started_at=timestamp(),
@@ -216,6 +221,7 @@ class ParallelOrchestrator:
         except (ProviderError, BudgetExceededError, GitOperationError, WorkspaceViolation) as exc:
             report.integration_status = "failed"
             report.stopped_reason = str(exc)
+            report.error_kind = getattr(exc, "kind", "workflow")
         except (ValidationError, ValueError):
             report.integration_status = "failed"
             report.stopped_reason = "invalid or incomplete task plan/agent output"
@@ -259,12 +265,14 @@ class ParallelOrchestrator:
             planning_start = monotonic()
             self.notify("planning")
             try:
-                plan = await asyncio.wait_for(
-                    self.planner.decompose(report.request, context),
-                    self.config.parallel.agent_timeout_seconds,
-                )
-            except BaseException:
+                with capture_attempt(report.planner_execution):
+                    plan = await asyncio.wait_for(
+                        self.planner.decompose(report.request, context),
+                        self.config.parallel.agent_timeout_seconds,
+                    )
+            except BaseException as error:
                 report.planner_execution.error = "planning failed or was interrupted"
+                report.planner_execution.error_kind = getattr(error, "kind", "interrupted")
                 raise
             finally:
                 report.planner_execution.finished_at = timestamp()
@@ -291,6 +299,10 @@ class ParallelOrchestrator:
             if any(result.status != "completed" for result in selected):
                 report.integration_status = "agent_failed"
                 report.stopped_reason = "one or more agents failed; batch was not integrated"
+                report.error_kind = next(
+                    (a.error_kind for t in selected for a in t.attempts if a.error_kind),
+                    "agent_failed",
+                )
                 return
             for result in selected:
                 self.notify("integrating", task_id=result.task.id)
@@ -334,12 +346,14 @@ class ParallelOrchestrator:
                 review_start = monotonic()
                 self.notify("reviewing")
                 try:
-                    report.review = await asyncio.wait_for(
-                        self.reviewer.review(report.request, context, current.checks.pytest),
-                        self.config.parallel.agent_timeout_seconds,
-                    )
-                except BaseException:
+                    with capture_attempt(report.reviewer_execution):
+                        report.review = await asyncio.wait_for(
+                            self.reviewer.review(report.request, context, current.checks.pytest),
+                            self.config.parallel.agent_timeout_seconds,
+                        )
+                except BaseException as error:
                     report.reviewer_execution.error = "review failed or was interrupted"
+                    report.reviewer_execution.error_kind = getattr(error, "kind", "interrupted")
                     raise
                 finally:
                     report.reviewer_execution.finished_at = timestamp()
@@ -367,11 +381,18 @@ class ParallelOrchestrator:
         feedback: str | None,
     ) -> None:
         slots: asyncio.Queue[str] = asyncio.Queue()
+        provider_failed = False
         for index in range(self.config.parallel.concurrency):
             slots.put_nowait(f"developer-{index + 1}")
 
         async def develop(result: ParallelTaskResult) -> None:
+            nonlocal provider_failed
             agent_id = await slots.get()
+            if provider_failed:
+                result.status = "blocked"
+                slots.put_nowait(agent_id)
+                self.notify("developer_blocked", task_id=result.task.id, agent_id=agent_id)
+                return
             start = monotonic()
             attempt = AgentAttempt(
                 number=len(result.attempts) + 1, agent_id=agent_id, started_at=timestamp()
@@ -390,10 +411,11 @@ class ParallelOrchestrator:
                     "Return every owned file exactly once. Return no other files. "
                     "Other files are read-only context. Do not run commands."
                 )
-                generated = await asyncio.wait_for(
-                    developer.generate(prompt, context, feedback),
-                    self.config.parallel.agent_timeout_seconds,
-                )
+                with capture_attempt(attempt):
+                    generated = await asyncio.wait_for(
+                        developer.generate(prompt, context, feedback),
+                        self.config.parallel.agent_timeout_seconds,
+                    )
                 generated = CodeGenerationResult.model_validate(generated)
                 self.integration.apply(result.task, generated)
                 attempt.commit = await self.integration.commit_task(result.task, attempt.number)
@@ -401,24 +423,34 @@ class ParallelOrchestrator:
             except asyncio.CancelledError:
                 result.status = "cancelled"
                 attempt.error = "agent cancelled by workflow deadline or caller"
+                attempt.error_kind = "interrupted"
                 raise
             except TimeoutError:
                 result.status = "failed"
                 attempt.error = "agent deadline exceeded"
+                attempt.error_kind = "timeout"
+            except ProviderError as exc:
+                provider_failed = True
+                result.status = "failed"
+                attempt.error, attempt.error_kind = str(exc), exc.kind
             except (
-                ProviderError,
                 BudgetExceededError,
                 GitOperationError,
                 WorkspaceViolation,
             ) as exc:
                 result.status = "failed"
                 attempt.error = str(exc)
+                attempt.error_kind = (
+                    "implementation" if isinstance(exc, WorkspaceViolation) else "workflow"
+                )
             except (ValidationError, ValueError):
                 result.status = "failed"
                 attempt.error = "invalid or incomplete agent output"
+                attempt.error_kind = "implementation"
             except Exception:
                 result.status = "failed"
                 attempt.error = "unexpected agent failure"
+                attempt.error_kind = "workflow"
             finally:
                 attempt.finished_at = timestamp()
                 attempt.duration_seconds = monotonic() - start
@@ -435,6 +467,7 @@ def build_parallel_orchestrator(config: AutoDevConfig, repo: Path) -> ParallelOr
     if config.provider != "codex_cli":
         raise ProviderError("parallel development requires codex_cli with your ChatGPT login")
     integration = IntegrationManager(repo, config.parallel.git_timeout_seconds)
+    models = resolve_config(config)
     budget = ApiBudgetTracker(
         config.agents.api_budget_usd, config.agents.estimated_cost_per_model_call_usd
     )
@@ -445,6 +478,7 @@ def build_parallel_orchestrator(config: AutoDevConfig, repo: Path) -> ParallelOr
             config.agents.developer_model,
             config.agents.reviewer_model,
             workspace=workspace,
+            model_policy=models,
         )
 
     client = provider(integration.integration.path)

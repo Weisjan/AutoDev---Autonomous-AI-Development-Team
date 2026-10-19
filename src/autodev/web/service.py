@@ -10,6 +10,7 @@ from pathlib import Path
 from autodev.checkpoints import RecoveryRequired
 from autodev.config import AutoDevConfig
 from autodev.integration import GitOperationError, IntegrationManager
+from autodev.model_policy import resolve_config
 from autodev.parallel import build_parallel_orchestrator, timestamp
 from autodev.parallel_schemas import ParallelWorkflowReport
 from autodev.planning import TaskPlan
@@ -235,19 +236,31 @@ class RunService:
                 | {
                     "provider": "codex_cli",
                     "sandbox": self.config.sandbox.model_dump() | {"backend": "docker"},
+                    "model_policy": (
+                        request.model_policy
+                        if "model_policy" in request.model_fields_set
+                        else self.config.model_policy
+                    ),
+                    "model_overrides": (
+                        {}
+                        if "model_policy" in request.model_fields_set
+                        and request.model_policy is None
+                        else self.config.model_overrides
+                    ),
                     "parallel": self.config.parallel.model_dump()
                     | request.model_dump(
-                        exclude={
-                            "repository_id",
-                            "instructions",
-                            "example",
-                            "mode",
+                        include={
+                            "concurrency",
+                            "max_tasks",
+                            "max_corrections",
+                            "max_model_calls",
+                            "workflow_timeout_seconds",
                         }
                     ),
                 }
             )
             workflow = (self.project_factory if request.mode == "project" else self.factory)(
-                config, root
+                config.model_copy(update={"model_policy": resolve_config(config)}), root
             )
             run_id = workflow.integration.run_id
             if not RUN_ID.fullmatch(run_id):
@@ -263,6 +276,7 @@ class RunService:
                 "started_at": timestamp(),
                 "finished_at": "",
                 "report": None,
+                "model_policy": resolve_config(config).model_dump(mode="json"),
                 "events": [],
             }
             # Check storage before launching any model/Git work.
@@ -323,6 +337,8 @@ class RunService:
                         "provider": "codex_cli",
                         "sandbox": self.config.sandbox.model_dump() | {"backend": "docker"},
                         "parallel": live.workflow_limits,
+                        "model_policy": live.model_policy,
+                        "model_overrides": {},
                     }
                 )
                 workflow = self.project_factory(config, root, run_id=run_id)

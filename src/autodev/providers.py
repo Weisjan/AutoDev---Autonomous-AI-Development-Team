@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -24,6 +25,14 @@ from autodev.agents import (
     _reviewer_prompt,
 )
 from autodev.config import AutoDevConfig, CodexCLIConfig
+from autodev.model_execution import begin_execution
+from autodev.model_policy import (
+    ResolvedModelPolicy,
+    ResolvedRole,
+    Role,
+    resolve_config,
+    resolve_policy,
+)
 from autodev.planning import TaskPlan
 from autodev.schemas import CodeGenerationResult, GeneratedFile, ReviewResult, TestRunResult
 
@@ -33,29 +42,55 @@ ResponseModel = TypeVar("ResponseModel", bound=BaseModel)
 class ProviderError(RuntimeError):
     """A model provider failed; callers must never fall back to a paid provider."""
 
+    kind = "provider"
+
 
 class ProviderAuthenticationError(ProviderError):
     """The selected provider has no valid login."""
+
+    kind = "authentication"
+
+
+class ProviderConfigurationError(ProviderError):
+    """Codex rejected or ignored an explicit model/reasoning configuration."""
+
+    kind = "configuration_invalid"
+
+
+class ProviderModelUnavailableError(ProviderError):
+    """The requested model is unavailable or inaccessible; entitlement is not inferred."""
+
+    kind = "model_unavailable"
 
 
 class ProviderProcessError(ProviderError):
     """The provider could not start or exited unsuccessfully."""
 
+    kind = "subprocess"
+
 
 class ProviderTimeoutError(ProviderError):
     """The model call exceeded its time limit."""
+
+    kind = "timeout"
 
 
 class ProviderResponseError(ProviderError):
     """The provider returned missing, oversized, or invalid structured output."""
 
+    kind = "response_invalid"
+
 
 class ProviderJSONParseError(ProviderResponseError):
     """The final response is not a single UTF-8 JSON document."""
 
+    kind = "response_parse"
+
 
 class ProviderSchemaError(ProviderResponseError):
     """JSON parsed, but typed fields or application invariants failed validation."""
+
+    kind = "response_schema"
 
 
 # These messages originate in AutoDev validators, never in model-supplied input.
@@ -147,6 +182,8 @@ def _parse_response(payload: bytes, response_type: type[ResponseModel]) -> Respo
 class ProviderRateLimitError(ProviderError):
     """ChatGPT usage limits were reached; no retries or paid fallback are implicit."""
 
+    kind = "rate_limit"
+
 
 class ModelProvider(DeveloperModelClient, ReviewerModelClient, Protocol):
     """Shared developer/reviewer contract, independent of transport or authentication."""
@@ -194,11 +231,14 @@ class CodexCLIProvider:
         developer_model: str | None = None,
         reviewer_model: str | None = None,
         workspace: Path | None = None,
+        *,
+        model_policy: ResolvedModelPolicy | None = None,
     ) -> None:
         self._config = config
         self._developer_model = developer_model
         self._reviewer_model = reviewer_model
         self._workspace = workspace
+        self._models = model_policy or resolve_policy(None, developer_model, reviewer_model)
 
     async def plan(self, request: str, files: list[GeneratedFile], max_tasks: int) -> TaskPlan:
         prompt = (
@@ -210,7 +250,7 @@ class CodexCLIProvider:
             "output to begin work. All required implementation files must have one owner.\n"
             + _developer_prompt(request, files, None)
         )
-        return await self._run(prompt, TaskPlan, self._developer_model)
+        return await self._run(prompt, TaskPlan, self._models.architect, "architect")
 
     async def architect(self, request: str, files: list[GeneratedFile], max_tasks: int):
         from autodev.architect import milestone_requirements
@@ -251,7 +291,7 @@ class CodexCLIProvider:
             "Read-only baseline context (not files to return or modify):\n"
             + json.dumps([file.model_dump() for file in files])
         )
-        return await self._run(prompt, ProjectSpec, self._developer_model)
+        return await self._run(prompt, ProjectSpec, self._models.architect, "architect")
 
     async def generate_code(
         self, task: str, previous_files: list[GeneratedFile], test_output: str | None
@@ -259,7 +299,8 @@ class CodexCLIProvider:
         return await self._run(
             DEVELOPER_INSTRUCTIONS + _developer_prompt(task, previous_files, test_output),
             CodeGenerationResult,
-            self._developer_model,
+            self._models.developer,
+            "developer",
         )
 
     async def review(
@@ -268,11 +309,32 @@ class CodexCLIProvider:
         return await self._run(
             REVIEWER_INSTRUCTIONS + _reviewer_prompt(task, files, test_result),
             ReviewResult,
-            self._reviewer_model,
+            self._models.reviewer,
+            "reviewer",
         )
 
     async def _run(
-        self, prompt: str, response_type: type[ResponseModel], model: str | None
+        self, prompt: str, response_type: type[ResponseModel], settings: ResolvedRole, role: Role
+    ) -> ResponseModel:
+        execution = begin_execution(role, settings)
+        try:
+            result = await self._execute(prompt, response_type, settings)
+            execution.status = "succeeded"
+            return result
+        except ProviderError as error:
+            execution.status, execution.error_kind = "failed", error.kind
+            raise
+        except asyncio.CancelledError:
+            execution.status = "cancelled"
+            raise
+        except Exception:
+            execution.status, execution.error_kind = "failed", "subprocess"
+            raise ProviderProcessError(
+                "Unexpected Codex CLI provider failure; no fallback was attempted."
+            ) from None
+
+    async def _execute(
+        self, prompt: str, response_type: type[ResponseModel], settings: ResolvedRole
     ) -> ResponseModel:
         executable = _codex_executable(self._config.executable)
         # No repository, credentials, or generated files are copied into this directory.
@@ -309,8 +371,12 @@ class CodexCLIProvider:
                 "--output-schema",
                 str(schema_path),
             ]
-            if model:
-                command.extend(["--model", model])
+            if settings.model:
+                command.extend(["--model", settings.model])
+            if settings.reasoning_effort:
+                command.extend(
+                    ["--config", f'model_reasoning_effort="{settings.reasoning_effort}"']
+                )
             command.append("-")
             prompt = (
                 "Return only a JSON object matching the response schema. "
@@ -350,9 +416,56 @@ class CodexCLIProvider:
                     # Drain remaining buffered pipe data after killing, then reap the child.
                     await process.communicate()
 
+            diagnostic = stderr.decode("utf-8", errors="replace").lower()
+            # Only recognized CLI diagnostic lines can reject a successful call. Never
+            # treat model prose/self-reported settings as verified runtime metadata.
+            warnings = [
+                line for line in diagnostic.splitlines() if line.startswith(("warning:", "error:"))
+            ]
+            if any(
+                "reasoning" in line
+                and any(
+                    marker in line
+                    for marker in (
+                        "unsupported",
+                        "not supported",
+                        "ignoring",
+                        "falling back",
+                        "using default",
+                    )
+                )
+                for line in warnings
+            ):
+                raise ProviderConfigurationError(
+                    "Codex CLI rejected or ignored the requested reasoning setting. "
+                    "No model or reasoning substitution was attempted."
+                )
+            if settings.model and any(
+                "model" in line
+                and any(
+                    marker in line
+                    for marker in ("falling back", "using default", "substituting", "ignoring")
+                )
+                for line in warnings
+            ):
+                raise ProviderModelUnavailableError(
+                    "Codex CLI reported a model substitution or ignored model setting. "
+                    "The response was rejected; no fallback was accepted."
+                )
             if process.returncode != 0:
                 # Inspect diagnostics only to classify failure; never expose or persist them.
-                diagnostic = stderr.decode("utf-8", errors="replace").lower()
+                if "reasoning" in diagnostic and any(
+                    marker in diagnostic
+                    for marker in (
+                        "unsupported",
+                        "not supported",
+                        "invalid",
+                        "unknown variant",
+                    )
+                ):
+                    raise ProviderConfigurationError(
+                        "Codex CLI rejected the reasoning configuration; no fallback was attempted."
+                    )
                 if any(
                     marker in diagnostic
                     for marker in (
@@ -366,6 +479,28 @@ class CodexCLIProvider:
                     raise ProviderRateLimitError(
                         "Codex CLI usage/rate limit reached. Retry later; "
                         "no paid fallback was attempted."
+                    )
+                if any(
+                    marker in diagnostic
+                    for marker in (
+                        "model_not_found",
+                        "unsupported_model",
+                        "model is not available",
+                        "model is not supported",
+                        "model does not exist",
+                        "model not found",
+                        "do not have access to",
+                        "does not exist or you do not have access",
+                        "not supported when using codex with a chatgpt account",
+                    )
+                ) or re.search(
+                    r"\bmodel(?:\s+['\"`]?[a-z0-9._-]+['\"`]?)?\s+(?:is\s+)?"
+                    r"(?:not supported|not available|does not exist|not found)\b",
+                    diagnostic,
+                ):
+                    raise ProviderModelUnavailableError(
+                        "Requested Codex model is unavailable or inaccessible to this account. "
+                        "Catalog membership does not prove access. No fallback was attempted."
                     )
                 if any(
                     marker in diagnostic
@@ -501,7 +636,10 @@ def _codex_executable(configured: str) -> str:
 def build_provider(config: AutoDevConfig) -> ModelProvider:
     if config.provider == "codex_cli":
         return CodexCLIProvider(
-            config.codex_cli, config.agents.developer_model, config.agents.reviewer_model
+            config.codex_cli,
+            config.agents.developer_model,
+            config.agents.reviewer_model,
+            model_policy=resolve_config(config),
         )
     if config.provider == "openai_api":
         return OpenAIAPIProvider(config.agents.developer_model, config.agents.reviewer_model)
